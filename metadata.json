@@ -1,0 +1,6 @@
+{
+  "name": "IPTV Proxy",
+  "description": "Production-ready self-hosted IPTV Proxy management application with SQLite, multi-provider Xtream routing, and WireGuard/OpenVPN/VPNGate/WARP VPN orchestration.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

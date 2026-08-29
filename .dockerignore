@@ -1,0 +1,12 @@
+node_modules
+.next
+.git
+.gitignore
+*.log
+.env.local
+.env
+data/
+tmp/
+coverage/
+dist/
+build/

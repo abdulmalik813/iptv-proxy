@@ -1,0 +1,19 @@
+{
+  "name": "IPTV Proxy Dev Container",
+  "image": "mcr.microsoft.com/devcontainers/typescript-node:1-22-bookworm",
+  "runArgs": [
+    "--cap-add=NET_ADMIN",
+    "--device=/dev/net/tun:/dev/net/tun"
+  ],
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "dbaeumer.vscode-eslint",
+        "esbenp.prettier-vscode",
+        "bradlc.vscode-tailwindcss"
+      ]
+    }
+  },
+  "forwardPorts": [3000, 8080],
+  "postCreateCommand": "npm install"
+}

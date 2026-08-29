@@ -1,0 +1,16 @@
+node_modules/
+.next/
+coverage/
+.DS_Store
+*.log
+.env*
+!.env.example
+
+# SQLite Database & Runtime Files
+data/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+/tmp/vpn/
+
