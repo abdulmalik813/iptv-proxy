@@ -71,6 +71,15 @@ test('WireGuard and OpenVPN expose CRUD endpoints and block active profile mutat
   }
 });
 
+test('CRUD validation errors remain visible inside the VPN profile modal', async () => {
+  const page = await source('app/vpn/page.tsx');
+  assert.match(page, /const \[editorError, setEditorError\]/);
+  assert.match(page, /setEditorError\(e instanceof Error \? e\.message : String\(e\)\)/);
+  assert.match(page, /Validation error/);
+  assert.match(page, /\{editorError\}/);
+  assert.match(page, /const closeEditor = \(\) =>/);
+});
+
 test('Saved VPNGate profiles retain vpn/vpn authentication and remain OpenVPN CRUD profiles', async () => {
   const gateRoute = await source('app/api/vpn/vpngate/route.ts');
   const manager = await source('lib/services/vpn/vpn-manager.ts');
@@ -129,13 +138,48 @@ test('Public provider responses mask stored passwords', async () => {
   assert.match(code, /local_password: MASK/);
 });
 
-test('Next.js UI networking stays below configured UI base path', async () => {
+test('Next.js UI base path comes from UI_URL and the production build receives it', async () => {
   const config = await source('next.config.ts');
   const bridge = await source('components/ui-route-bridge.tsx');
+  const dockerfile = await source('Dockerfile');
+  const workflow = await source('.github/workflows/build.yml');
+  assert.match(config, /process\.env\.UI_URL/);
   assert.match(config, /new URL\(uiUrl\)\.pathname/);
   assert.match(config, /NEXT_PUBLIC_UI_BASE_PATH/);
+  assert.match(dockerfile, /ARG UI_URL=/);
+  assert.match(dockerfile, /ENV UI_URL=\$\{UI_URL\}/);
+  assert.match(workflow, /UI_URL=\$\{\{ vars\.UI_URL \|\| 'https:\/\/iptv\.yourwebpage\.ca\/ui' \}\}/);
   assert.match(bridge, /input\.startsWith\('\/api\/'\)/);
   assert.match(bridge, /window\.EventSource/);
+});
+
+test('Go proxy is available in development and production images with placeholder page', async () => {
+  const dockerfile = await source('Dockerfile');
+  const devDockerfile = await source('.devcontainer/Dockerfile');
+  const devcontainer = await source('.devcontainer/devcontainer.json');
+  const goMain = await source('cmd/proxy/main.go');
+  const goMod = await source('go.mod');
+  assert.match(dockerfile, /golang-go/);
+  assert.match(dockerfile, /go build -o \/app\/bin\/iptv-go-proxy/);
+  assert.match(devDockerfile, /golang-go/);
+  assert.match(devcontainer, /golang\.go/);
+  assert.match(goMain, /I'm working/);
+  assert.match(goMain, /:8080/);
+  assert.match(goMain, /\/health/);
+  assert.match(goMod, /module github\.com\/abdulmalik813\/iptv-reverse-proxy/);
+});
+
+test('Go proxy shares the admin network namespace so VPN routing applies to Go egress', async () => {
+  for (const composePath of ['docker-compose.yml', 'docker-compose.dokploy.yml']) {
+    const compose = await source(composePath);
+    assert.match(compose, /iptv-go-proxy:/);
+    assert.match(compose, /network_mode: "service:iptv-proxy-admin"/);
+    assert.match(compose, /GO_PROXY_ADDR: :8080/);
+    assert.match(compose, /http:\/\/127\.0\.0\.1:8080\/health/);
+  }
+  const dokploy = await source('docker-compose.dokploy.yml');
+  assert.match(dokploy, /dokploy-network:/);
+  assert.match(dokploy, /iptv-internal:/);
 });
 
 test('Core management API routes exist', async () => {
