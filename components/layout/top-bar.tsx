@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useCallback, useEffect, useState } from 'react';
-import { CircleCheck, CircleX, Globe2, MapPin, Menu, RefreshCw, Server, Shield, ShieldAlert, ShieldCheck } from 'lucide-react';
+import { CircleCheck, CircleX, Globe2, MapPin, Menu, Moon, RefreshCw, Server, Shield, ShieldAlert, ShieldCheck, Sun } from 'lucide-react';
 import Link from 'next/link';
 
 interface TopBarProps {
@@ -36,11 +36,32 @@ interface SystemStatusData {
   };
 }
 
+type Theme = 'dark' | 'light';
+
 export function TopBar({ onToggleMobile }: TopBarProps) {
   const [vpn, setVpn] = useState<VpnStatusData | null>(null);
   const [network, setNetwork] = useState<NetworkStatusData | null>(null);
   const [system, setSystem] = useState<SystemStatusData | null>(null);
   const [loading, setLoading] = useState(false);
+  const [theme, setTheme] = useState<Theme>('dark');
+
+  useEffect(() => {
+    const stored = window.localStorage.getItem('iptv-proxy-theme');
+    const initial: Theme = stored === 'light' || stored === 'dark'
+      ? stored
+      : window.matchMedia('(prefers-color-scheme: light)').matches
+        ? 'light'
+        : 'dark';
+    document.documentElement.dataset.theme = initial;
+    setTheme(initial);
+  }, []);
+
+  const toggleTheme = () => {
+    const next: Theme = theme === 'dark' ? 'light' : 'dark';
+    document.documentElement.dataset.theme = next;
+    window.localStorage.setItem('iptv-proxy-theme', next);
+    setTheme(next);
+  };
 
   const refreshStatus = useCallback(async (forceNetwork = false) => {
     try {
@@ -163,6 +184,16 @@ export function TopBar({ onToggleMobile }: TopBarProps) {
             )}
             <span className="hidden max-w-32 truncate text-[10px] text-neutral-500 md:inline">{outboundIp}</span>
           </Link>
+
+          <button
+            id="btn-theme-toggle"
+            onClick={toggleTheme}
+            title={`Switch to ${theme === 'dark' ? 'light' : 'dark'} mode`}
+            aria-label={`Switch to ${theme === 'dark' ? 'light' : 'dark'} mode`}
+            className="shrink-0 border border-neutral-800 bg-black p-1.5 text-neutral-400 transition-colors hover:bg-neutral-900 hover:text-white"
+          >
+            {theme === 'dark' ? <Sun className="h-3.5 w-3.5" /> : <Moon className="h-3.5 w-3.5" />}
+          </button>
 
           <button
             id="btn-refresh-topbar"
