@@ -1,6 +1,7 @@
 import crypto from 'crypto';
 import { getDb, initDatabase } from '../db';
 import { IptvProvider } from '../db/schema';
+import { hashProviderPassword } from '../auth/provider-password';
 import { LogService } from './log.service';
 import { ProviderUserService } from './provider-user.service';
 
@@ -49,7 +50,7 @@ function rowToProvider(row: Record<string, unknown>, includeSensitive: boolean):
     upstream_username: String(row.upstream_username),
     upstream_password: includeSensitive ? String(row.upstream_password) : MASK,
     local_username: String(row.local_username),
-    local_password: includeSensitive ? String(row.local_password) : MASK,
+    local_password: MASK,
     is_default: Number(row.is_default || 0),
     cache_duration_hours: Number(row.cache_duration_hours ?? 1),
     enabled: Number(row.enabled ?? 1),
@@ -95,7 +96,7 @@ export class ProviderService {
       ...provider,
       upstream_password: MASK,
       local_password: MASK,
-      users: provider.users?.map((user) => ({ ...user, password: MASK })),
+      users: provider.users?.map((user) => ({ ...user, password_hash: MASK })),
     };
   }
 
@@ -126,6 +127,7 @@ export class ProviderService {
     if (isRouteReserved(route)) throw new Error(`Route "${route}" is reserved by the system.`);
     if (!localUsername) throw new Error('Initial client username is required.');
     if (!input.local_password) throw new Error('Initial client password is required.');
+    if (input.local_password.length > 4096) throw new Error('Initial client password is too long.');
     const routeCheck = await db.execute({ sql: 'SELECT id FROM iptv_providers WHERE route = ?', args: [route] });
     if (routeCheck.rows.length) throw new Error(`Route "${route}" is already in use.`);
 
@@ -135,19 +137,20 @@ export class ProviderService {
     const isDefault = input.is_default ? 1 : 0;
     const cacheHours = Math.max(0, Math.min(24, Math.trunc(input.cache_duration_hours ?? 1)));
     const enabled = input.enabled === false ? 0 : 1;
+    const passwordHash = hashProviderPassword(input.local_password);
     const statements: Array<string | { sql: string; args: Array<string | number> }> = [];
     if (isDefault) {
       statements.push({ sql: 'UPDATE iptv_providers SET is_default = 0, updated_at = ? WHERE is_default = 1', args: [now] });
     }
     statements.push({
       sql: `INSERT INTO iptv_providers (id, name, host, route, upstream_username, upstream_password, local_username, local_password, is_default, cache_duration_hours, enabled, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      args: [id, name, host, route, input.upstream_username.trim(), input.upstream_password, localUsername, input.local_password, isDefault, cacheHours, enabled, now, now],
+            VALUES (?, ?, ?, ?, ?, ?, ?, '', ?, ?, ?, ?, ?)`,
+      args: [id, name, host, route, input.upstream_username.trim(), input.upstream_password, localUsername, isDefault, cacheHours, enabled, now, now],
     });
     statements.push({
-      sql: `INSERT INTO provider_users (id, provider_id, username, password, enabled, created_at, updated_at)
-            VALUES (?, ?, ?, ?, 1, ?, ?)`,
-      args: [providerUserId, id, localUsername, input.local_password, now, now],
+      sql: `INSERT INTO provider_users (id, provider_id, username, password, password_hash, enabled, created_at, updated_at)
+            VALUES (?, ?, ?, '', ?, 1, ?, ?)`,
+      args: [providerUserId, id, localUsername, passwordHash, now, now],
     });
     await db.batch(statements);
     await LogService.info('provider', 'creation', `Created provider "${name}" on route "/${route}".`, {
@@ -197,7 +200,7 @@ export class ProviderService {
     const enabled = input.enabled !== undefined ? (input.enabled ? 1 : 0) : existing.enabled;
 
     statements.push({
-      sql: `UPDATE iptv_providers SET name = ?, host = ?, route = ?, upstream_username = ?, upstream_password = ?, is_default = ?, cache_duration_hours = ?, enabled = ?, updated_at = ? WHERE id = ?`,
+      sql: `UPDATE iptv_providers SET name = ?, host = ?, route = ?, upstream_username = ?, upstream_password = ?, is_default = ?, cache_duration_hours = ?, enabled = ?, local_password = '', updated_at = ? WHERE id = ?`,
       args: [name, host, route, upstreamUsername, upstreamPassword, isDefault, cacheHours, enabled, now, id],
     });
     await db.batch(statements);
