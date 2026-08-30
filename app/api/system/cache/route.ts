@@ -32,9 +32,11 @@ export async function POST(req: NextRequest) {
   const user = await getSessionUser();
   if (!user) return NextResponse.json({ success: false, error: 'Unauthorized' }, { status: 401 });
   const key = new URL(req.url).searchParams.get('key')?.trim();
-  if (!key) return NextResponse.json({ success: false, error: 'key is required' }, { status: 400 });
+  const target = key
+    ? `http://127.0.0.1:8080/internal/cache/refresh?key=${encodeURIComponent(key)}`
+    : 'http://127.0.0.1:8080/internal/cache/start';
   try {
-    const response = await fetch(`http://127.0.0.1:8080/internal/cache/refresh?key=${encodeURIComponent(key)}`, { method: 'POST', headers: headers(), signal: AbortSignal.timeout(10 * 60 * 1000) });
+    const response = await fetch(target, { method: 'POST', headers: headers(), signal: AbortSignal.timeout(30 * 60 * 1000) });
     return NextResponse.json(await readJson(response), { status: response.status });
   } catch (error) {
     return NextResponse.json({ success: false, error: error instanceof Error ? error.message : String(error) }, { status: 503 });
