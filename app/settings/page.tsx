@@ -1,21 +1,16 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
-import { useRouter } from 'next/navigation';
-import {
-  Settings as SettingsIcon,
-  Database,
-  Server,
-  Shield,
-  Save,
-  CheckCircle2,
-  AlertTriangle,
-  Radio,
-  FileCode,
-  HardDrive,
-} from 'lucide-react';
-import { Sidebar } from '@/components/layout/sidebar';
-import { TopBar } from '@/components/layout/top-bar';
+import * as React from 'react';
+import { Database, HardDrive, Save, Server, Settings2 } from 'lucide-react';
+import { AppShell } from '@/components/layout/app-shell';
+import { PageHeader } from '@/components/layout/page-header';
+import { Alert, AlertDescription } from '@/components/ui/alert';
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { apiPath, readJson } from '@/lib/client/api';
 
 interface AppSettings {
   id: string;
@@ -42,252 +37,176 @@ interface HealthData {
   };
 }
 
+type Envelope<T = unknown> = {
+  success?: boolean;
+  data?: T;
+  error?: string;
+};
+
+function formatUptime(seconds = 0) {
+  const days = Math.floor(seconds / 86_400);
+  const hours = Math.floor((seconds % 86_400) / 3_600);
+  const minutes = Math.floor((seconds % 3_600) / 60);
+  return days > 0 ? `${days}d ${hours}h` : `${hours}h ${minutes}m`;
+}
+
+function DetailRows({ rows }: { rows: Array<[string, React.ReactNode]> }) {
+  return (
+    <div className="divide-y rounded-lg border">
+      {rows.map(([label, value]) => (
+        <div key={label} className="flex items-start justify-between gap-6 px-4 py-3 text-sm">
+          <span className="text-muted-foreground">{label}</span>
+          <span className="max-w-[65%] break-words text-right font-medium">{value}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export default function SettingsPage() {
-  const router = useRouter();
-  const [mobileOpen, setMobileOpen] = useState(false);
-  const [user, setUser] = useState<{ username: string } | null>(null);
+  const [settings, setSettings] = React.useState<AppSettings | null>(null);
+  const [health, setHealth] = React.useState<HealthData | null>(null);
+  const [loading, setLoading] = React.useState(true);
+  const [logRetentionDays, setLogRetentionDays] = React.useState(30);
+  const [saving, setSaving] = React.useState(false);
+  const [message, setMessage] = React.useState<string | null>(null);
+  const [error, setError] = React.useState<string | null>(null);
 
-  const [settings, setSettings] = useState<AppSettings | null>(null);
-  const [health, setHealth] = useState<HealthData | null>(null);
-  const [loading, setLoading] = useState(true);
-
-  // Form State
-  const [logRetentionDays, setLogRetentionDays] = useState(30);
-  const [saving, setSaving] = useState(false);
-  const [savedSuccess, setSavedSuccess] = useState(false);
-  const [saveError, setSaveError] = useState<string | null>(null);
-
-  useEffect(() => {
-    let ignore = false;
-    async function fetchData() {
-      try {
-        const [authRes, settingsRes, healthRes] = await Promise.all([
-          fetch('/api/auth/me'),
-          fetch('/api/settings'),
-          fetch('/api/system/health'),
-        ]);
-
-        if (authRes.status === 401) {
-          router.push('/login');
-          return;
-        }
-        const authData = await authRes.json();
-        if (ignore) return;
-        if (authData.authenticated) setUser(authData.user);
-
-        if (settingsRes.ok) {
-          const s = await settingsRes.json();
-          if (ignore) return;
-          if (s.success) {
-            setSettings(s.data);
-            setLogRetentionDays(s.data.log_retention_days || 30);
-          }
-        }
-
-        if (healthRes.ok) {
-          const h = await healthRes.json();
-          if (ignore) return;
-          if (h.success) setHealth(h.data);
-        }
-      } catch {
-        // Ignore
-      } finally {
-        if (!ignore) setLoading(false);
-      }
-    }
-
-    void fetchData();
-    return () => {
-      ignore = true;
-    };
-  }, [router]);
-
-  const handleSave = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setSaving(true);
-    setSaveError(null);
-    setSavedSuccess(false);
-
+  const load = React.useCallback(async () => {
+    setLoading(true);
+    setError(null);
     try {
-      const res = await fetch('/api/settings', {
+      const [settingsResponse, healthResponse] = await Promise.all([
+        fetch(apiPath('/api/settings'), { cache: 'no-store' }),
+        fetch(apiPath('/api/system/health'), { cache: 'no-store' }),
+      ]);
+      const [settingsPayload, healthPayload] = await Promise.all([
+        readJson<Envelope<AppSettings>>(settingsResponse),
+        readJson<Envelope<HealthData>>(healthResponse),
+      ]);
+      if (!settingsResponse.ok || !settingsPayload.success || !settingsPayload.data) {
+        throw new Error(settingsPayload.error || 'Unable to load settings.');
+      }
+      setSettings(settingsPayload.data);
+      setLogRetentionDays(settingsPayload.data.log_retention_days || 30);
+      if (healthResponse.ok && healthPayload.success && healthPayload.data) setHealth(healthPayload.data);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  React.useEffect(() => {
+    void load();
+  }, [load]);
+
+  const save = async (event: React.FormEvent) => {
+    event.preventDefault();
+    setSaving(true);
+    setError(null);
+    setMessage(null);
+    try {
+      const response = await fetch(apiPath('/api/settings'), {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ log_retention_days: Number(logRetentionDays) }),
       });
-      const data = await res.json();
-      if (!res.ok || !data.success) {
-        setSaveError(data.error || 'Failed to save settings');
-      } else {
-        setSavedSuccess(true);
-        setTimeout(() => setSavedSuccess(false), 3000);
-      }
-    } catch {
-      setSaveError('Network or server error');
+      const payload = await readJson<Envelope<AppSettings>>(response);
+      if (!response.ok || !payload.success) throw new Error(payload.error || 'Unable to save settings.');
+      if (payload.data) setSettings(payload.data);
+      setMessage('Settings saved.');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
     } finally {
       setSaving(false);
     }
   };
 
   return (
-    <div className="flex h-screen bg-black text-neutral-200 font-mono overflow-hidden">
-      <Sidebar
-        user={user}
-        onLogout={() => router.push('/login')}
-        mobileOpen={mobileOpen}
-        setMobileOpen={setMobileOpen}
-      />
+    <AppShell>
+      <PageHeader title="Settings" description="Application retention, storage, and runtime information." />
 
-      <div className="flex-1 flex flex-col min-w-0 overflow-y-auto">
-        <TopBar onToggleMobile={() => setMobileOpen(true)} />
+      {error && <Alert variant="destructive"><AlertDescription>{error}</AlertDescription></Alert>}
+      {message && <Alert variant="success"><AlertDescription>{message}</AlertDescription></Alert>}
 
-        <main className="p-4 sm:p-6 lg:p-8 space-y-6 max-w-7xl">
-          {/* Header */}
-          <div className="border-b border-neutral-800 pb-4">
-            <h1 className="text-base sm:text-lg font-bold text-white uppercase tracking-tight flex items-center gap-2">
-              <SettingsIcon className="w-5 h-5" />
-              <span>System & Architecture Settings</span>
-            </h1>
-            <p className="text-xs text-neutral-500">
-              Database persistence, log retention schedules, and Go engine interface specifications.
-            </p>
-          </div>
-
-          {saveError && (
-            <div className="p-3 bg-rose-950/50 border border-rose-800 text-rose-300 text-xs flex items-center gap-2">
-              <AlertTriangle className="w-4 h-4" />
-              <span>{saveError}</span>
-            </div>
-          )}
-
-          {savedSuccess && (
-            <div className="p-3 bg-emerald-950/50 border border-emerald-800 text-emerald-300 text-xs flex items-center gap-2">
-              <CheckCircle2 className="w-4 h-4" />
-              <span>Settings saved successfully.</span>
-            </div>
-          )}
-
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-            {/* Global Settings Form */}
-            <div className="border border-neutral-800 bg-neutral-950 p-5 space-y-4">
-              <div className="flex items-center gap-2 border-b border-neutral-800 pb-3">
-                <HardDrive className="w-4 h-4 text-white" />
-                <h2 className="text-xs font-bold uppercase tracking-wider text-white">
-                  Maintenance & Retention
-                </h2>
-              </div>
-
-              <form onSubmit={handleSave} className="space-y-4 text-xs">
-                <div>
-                  <label className="block text-neutral-400 text-[11px] font-semibold mb-1 uppercase">
-                    Audit Log Retention Period (Days)
-                  </label>
-                  <input
+      <div className="grid gap-6 lg:grid-cols-2">
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2"><Settings2 className="size-4" />Log retention</CardTitle>
+            <CardDescription>Choose how long historical application logs remain in SQLite.</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <form onSubmit={save} className="space-y-5">
+              <div className="space-y-2">
+                <Label htmlFor="log-retention-days">Retention period</Label>
+                <div className="flex max-w-xs items-center gap-2">
+                  <Input
+                    id="log-retention-days"
                     type="number"
-                    min="1"
-                    max="365"
+                    min={1}
+                    max={365}
                     value={logRetentionDays}
-                    onChange={(e) => setLogRetentionDays(parseInt(e.target.value, 10))}
-                    className="w-full px-3 py-2 bg-black border border-neutral-800 text-white focus:border-white focus:outline-none"
+                    onChange={(event) => setLogRetentionDays(Number.parseInt(event.target.value, 10) || 1)}
+                    disabled={loading}
                   />
-                  <p className="text-[10px] text-neutral-500 mt-1">
-                    Log entries older than this limit are pruned during database optimization cycles.
-                  </p>
+                  <span className="text-sm text-muted-foreground">days</span>
                 </div>
-
-                <div className="pt-2">
-                  <button
-                    type="submit"
-                    disabled={saving}
-                    className="px-4 py-2 bg-white text-black font-bold uppercase text-xs hover:bg-neutral-200 border border-white cursor-pointer flex items-center gap-2 disabled:opacity-50"
-                  >
-                    <Save className="w-3.5 h-3.5" />
-                    <span>{saving ? 'Saving...' : 'Save Preferences'}</span>
-                  </button>
-                </div>
-              </form>
-            </div>
-
-            {/* SQLite Database Telemetry */}
-            <div className="border border-neutral-800 bg-neutral-950 p-5 space-y-4">
-              <div className="flex items-center gap-2 border-b border-neutral-800 pb-3">
-                <Database className="w-4 h-4 text-white" />
-                <h2 className="text-xs font-bold uppercase tracking-wider text-white">
-                  SQLite Database Telemetry
-                </h2>
+                <p className="text-xs text-muted-foreground">Valid range: 1–365 days.</p>
               </div>
+              <Button type="submit" disabled={saving || loading}>
+                <Save />
+                {saving ? 'Saving…' : 'Save settings'}
+              </Button>
+            </form>
+          </CardContent>
+        </Card>
 
-              <div className="space-y-2.5 text-xs">
-                <div className="flex justify-between py-1 border-b border-neutral-900">
-                  <span className="text-neutral-500">Database Path</span>
-                  <span className="text-neutral-200 font-mono text-[11px]">{health?.dbPath || '/data/iptv-proxy.db'}</span>
-                </div>
-                <div className="flex justify-between py-1 border-b border-neutral-900">
-                  <span className="text-neutral-500">Journal Mode</span>
-                  <span className="text-emerald-400 font-bold uppercase">
-                    {health?.dbWalMode ? 'WAL (Write-Ahead Logging)' : 'Standard'}
-                  </span>
-                </div>
-                <div className="flex justify-between py-1 border-b border-neutral-900">
-                  <span className="text-neutral-500">Database Size</span>
-                  <span className="text-white font-mono">{health?.dbSizeFormatted || 'N/A'}</span>
-                </div>
-                <div className="flex justify-between py-1 border-b border-neutral-900">
-                  <span className="text-neutral-500">Total Provider Records</span>
-                  <span className="text-white">{health?.totalProviders ?? 0}</span>
-                </div>
-                <div className="flex justify-between py-1">
-                  <span className="text-neutral-500">Total Audit Logs</span>
-                  <span className="text-white">{health?.totalLogs ?? 0}</span>
-                </div>
-              </div>
-            </div>
-          </div>
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2"><Database className="size-4" />Storage</CardTitle>
+            <CardDescription>Current SQLite database state.</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <DetailRows rows={[
+              ['Database', health?.dbPath || '/data/iptv-proxy.db'],
+              ['Journal mode', health?.dbWalMode ? <Badge key="wal" variant="success">WAL</Badge> : <Badge key="standard" variant="secondary">Standard</Badge>],
+              ['Size', health?.dbSizeFormatted || 'N/A'],
+              ['Providers', `${health?.activeProviders ?? 0} enabled / ${health?.totalProviders ?? 0} total`],
+              ['Log records', health?.totalLogs ?? 0],
+            ]} />
+          </CardContent>
+        </Card>
 
-          {/* Go Proxy Core Engine Interface Reference */}
-          <div className="border border-neutral-800 bg-neutral-950 p-5 space-y-4">
-            <div className="flex items-center gap-2 border-b border-neutral-800 pb-3">
-              <Radio className="w-4 h-4 text-white" />
-              <div>
-                <h2 className="text-xs font-bold uppercase tracking-wider text-white">
-                  Go IPTV Proxy / Core Engine Interface Reference
-                </h2>
-                <p className="text-[11px] text-neutral-500">
-                  Specifications for the Go high-throughput video streaming proxy service.
-                </p>
-              </div>
-            </div>
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2"><Server className="size-4" />Runtime</CardTitle>
+            <CardDescription>Host process information reported by the application.</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <DetailRows rows={[
+              ['Node.js', health?.environment.nodeVersion || 'N/A'],
+              ['Platform', health ? `${health.environment.platform} / ${health.environment.arch}` : 'N/A'],
+              ['Uptime', formatUptime(health?.environment.uptimeSeconds)],
+              ['Setup', settings?.initial_setup_completed ? <Badge key="complete" variant="success">Complete</Badge> : <Badge key="pending" variant="warning">Pending</Badge>],
+            ]} />
+          </CardContent>
+        </Card>
 
-            <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 text-xs">
-              <div className="p-3.5 bg-black border border-neutral-900 space-y-2">
-                <span className="text-white font-bold uppercase text-[11px] block">
-                  1. Shared SQLite State
-                </span>
-                <p className="text-neutral-400 text-[11px] leading-relaxed">
-                  Both services share the SQLite database file in WAL mode. The Go engine reads <code className="text-neutral-200">iptv_providers</code> and <code className="text-neutral-200">app_settings</code> directly with zero IPC overhead.
-                </p>
-              </div>
-
-              <div className="p-3.5 bg-black border border-neutral-900 space-y-2">
-                <span className="text-white font-bold uppercase text-[11px] block">
-                  2. High-Performance Video Forwarding
-                </span>
-                <p className="text-neutral-400 text-[11px] leading-relaxed">
-                  Next.js never touches video TS/M3U8 chunks. The Go engine streams video packets using zero-allocation ring buffers and HTTP pipe forwarding.
-                </p>
-              </div>
-
-              <div className="p-3.5 bg-black border border-neutral-900 space-y-2">
-                <span className="text-white font-bold uppercase text-[11px] block">
-                  3. Path Normalization Contract
-                </span>
-                <p className="text-neutral-400 text-[11px] leading-relaxed">
-                  Requests matching <code className="text-neutral-200">/&lt;route&gt;/...</code> are mapped to the matched provider with credentials substituted in-flight; bare paths route to the default provider.
-                </p>
-              </div>
-            </div>
-          </div>
-        </main>
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2"><HardDrive className="size-4" />Network state</CardTitle>
+            <CardDescription>Persisted VPN state recorded by the control plane.</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <DetailRows rows={[
+              ['VPN', settings?.active_vpn_type || 'off'],
+              ['Status', settings?.vpn_status || 'off'],
+              ['Public IP', settings?.public_ip || 'Unknown'],
+            ]} />
+          </CardContent>
+        </Card>
       </div>
-    </div>
+    </AppShell>
   );
 }
