@@ -29,7 +29,6 @@ FROM golang:1.27-bookworm AS go-builder
 WORKDIR /src
 COPY go.mod ./
 COPY cmd ./cmd
-COPY internal ./internal
 RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/iptv-go-proxy ./cmd/proxy
 
 FROM node:22-bookworm-slim AS runner
