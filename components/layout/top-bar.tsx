@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useCallback, useEffect, useState } from 'react';
-import { Globe2, MapPin, Menu, RefreshCw, Server, Shield, ShieldAlert, ShieldCheck } from 'lucide-react';
+import { CircleCheck, CircleX, Globe2, MapPin, Menu, RefreshCw, Server, Shield, ShieldAlert, ShieldCheck } from 'lucide-react';
 import Link from 'next/link';
 
 interface TopBarProps {
@@ -28,17 +28,27 @@ interface NetworkStatusData {
   checkedAt: string;
 }
 
+interface SystemStatusData {
+  go: {
+    running: boolean;
+    status: 'running' | 'unhealthy' | 'offline';
+    latencyMs: number;
+  };
+}
+
 export function TopBar({ onToggleMobile }: TopBarProps) {
   const [vpn, setVpn] = useState<VpnStatusData | null>(null);
   const [network, setNetwork] = useState<NetworkStatusData | null>(null);
+  const [system, setSystem] = useState<SystemStatusData | null>(null);
   const [loading, setLoading] = useState(false);
 
   const refreshStatus = useCallback(async (forceNetwork = false) => {
     try {
       setLoading(true);
-      const [vpnRes, networkRes] = await Promise.all([
+      const [vpnRes, networkRes, systemRes] = await Promise.all([
         fetch('/api/vpn/status', { cache: 'no-store' }),
         fetch(`/api/network/status${forceNetwork ? '?refresh=true' : ''}`, { cache: 'no-store' }),
+        fetch('/api/system/status', { cache: 'no-store' }),
       ]);
 
       if (vpnRes.ok) {
@@ -50,8 +60,12 @@ export function TopBar({ onToggleMobile }: TopBarProps) {
         const json = await networkRes.json();
         if (json.success) setNetwork(json.data);
       }
+
+      if (systemRes.ok) {
+        const json = await systemRes.json();
+        if (json.success) setSystem(json.data);
+      }
     } catch {
-      // Keep the last known network state visible if a refresh fails.
     } finally {
       setLoading(false);
     }
@@ -67,12 +81,10 @@ export function TopBar({ onToggleMobile }: TopBarProps) {
   const location = network?.location || network?.country || 'LOCATION UNKNOWN';
   const outboundIp = network?.ip || 'IP UNAVAILABLE';
   const serverLabel = network?.server || (status === 'off' ? 'DIRECT / HOST NETWORK' : vpn?.profileName || 'UNKNOWN');
+  const goRunning = system?.go.running === true;
 
   return (
-    <header
-      id="app-topbar"
-      className="min-h-16 border-b border-neutral-800 bg-neutral-950 px-4 py-2 font-mono text-neutral-200 select-none sm:px-6"
-    >
+    <header id="app-topbar" className="min-h-16 border-b border-neutral-800 bg-neutral-950 px-4 py-2 font-mono text-neutral-200 select-none sm:px-6">
       <div className="flex min-h-12 items-center justify-between gap-3">
         <div className="flex min-w-0 items-center gap-3">
           <button
@@ -86,13 +98,20 @@ export function TopBar({ onToggleMobile }: TopBarProps) {
 
           <div className="hidden items-center gap-2 text-xs sm:flex">
             <span className="text-neutral-500">ENVIRONMENT:</span>
-            <span className="border border-neutral-800 bg-neutral-900 px-2 py-0.5 text-[11px] uppercase tracking-wider text-neutral-300">
-              DOCKER
-            </span>
+            <span className="border border-neutral-800 bg-neutral-900 px-2 py-0.5 text-[11px] uppercase tracking-wider text-neutral-300">DOCKER</span>
           </div>
         </div>
 
         <div className="flex min-w-0 flex-1 items-center justify-end gap-2 overflow-x-auto text-xs">
+          <div
+            id="topbar-go-status"
+            className="flex shrink-0 items-center gap-1.5 border border-neutral-800 bg-black px-2.5 py-1.5"
+            title={system ? `Go core: ${system.go.status} (${system.go.latencyMs} ms)` : 'Go core status pending'}
+          >
+            {goRunning ? <CircleCheck className="h-3.5 w-3.5 text-emerald-400" /> : <CircleX className="h-3.5 w-3.5 text-rose-400" />}
+            <span className={`text-[10px] font-semibold uppercase ${goRunning ? 'text-emerald-400' : 'text-rose-400'}`}>GO {goRunning ? 'RUNNING' : 'OFFLINE'}</span>
+          </div>
+
           <div
             id="topbar-egress-status"
             className="hidden min-w-0 items-center gap-3 border border-neutral-800 bg-black px-3 py-1.5 lg:flex"
@@ -149,7 +168,7 @@ export function TopBar({ onToggleMobile }: TopBarProps) {
             id="btn-refresh-topbar"
             onClick={() => void refreshStatus(true)}
             disabled={loading}
-            title="Refresh current outgoing IP, server, location, and VPN status"
+            title="Refresh runtime, outgoing IP, server, location, and VPN status"
             className="shrink-0 border border-neutral-800 bg-black p-1.5 text-neutral-400 transition-colors hover:bg-neutral-900 hover:text-white disabled:opacity-50"
           >
             <RefreshCw className={`h-3.5 w-3.5 ${loading ? 'animate-spin' : ''}`} />
