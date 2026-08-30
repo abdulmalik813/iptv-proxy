@@ -109,23 +109,23 @@ func main() {
 			}
 			writeJSON(w, http.StatusOK, map[string]any{"success": true, "data": entries, "stats": stats})
 		case http.MethodDelete:
-			ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+			ctx, cancel := context.WithTimeout(r.Context(), 10*time.Minute)
 			defer cancel()
 			key := r.URL.Query().Get("key")
 			if key == "" {
 				count, err := cacheManager.PurgeAll(ctx)
 				if err != nil {
-					writeJSON(w, http.StatusInternalServerError, map[string]any{"success": false, "error": err.Error()})
+					writeJSON(w, http.StatusInternalServerError, map[string]any{"success": false, "error": err.Error(), "replaced": count})
 					return
 				}
-				writeJSON(w, http.StatusOK, map[string]any{"success": true, "deleted": count})
+				writeJSON(w, http.StatusOK, map[string]any{"success": true, "replaced": count})
 				return
 			}
 			if err := cacheManager.Purge(ctx, key); err != nil {
 				writeJSON(w, http.StatusBadRequest, map[string]any{"success": false, "error": err.Error()})
 				return
 			}
-			writeJSON(w, http.StatusOK, map[string]any{"success": true, "deleted": 1})
+			writeJSON(w, http.StatusOK, map[string]any{"success": true, "replaced": 1})
 		default:
 			methodNotAllowed(w, http.MethodGet+", "+http.MethodDelete)
 		}
@@ -150,7 +150,7 @@ func main() {
 			writeJSON(w, http.StatusBadRequest, map[string]any{"success": false, "error": err.Error()})
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"success": true})
+		writeJSON(w, http.StatusOK, map[string]any{"success": true, "replaced": 1})
 	})
 
 	if uiBasePath == "/" {
