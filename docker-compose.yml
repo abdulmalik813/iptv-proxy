@@ -3,6 +3,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        UI_URL: ${UI_URL:-http://localhost:3000/ui}
     container_name: iptv-proxy-admin
     restart: unless-stopped
     cap_add:
@@ -13,7 +15,7 @@ services:
       NODE_ENV: production
       DATABASE_PATH: /data/iptv-proxy.db
       SESSION_SECRET: ${SESSION_SECRET:-}
-      APP_URL: ${APP_URL:-}
+      UI_URL: ${UI_URL:-http://localhost:3000/ui}
       COOKIE_SECURE: ${COOKIE_SECURE:-false}
       INITIAL_ADMIN_USERNAME: ${INITIAL_ADMIN_USERNAME:-admin}
       INITIAL_ADMIN_PASSWORD: ${INITIAL_ADMIN_PASSWORD:-}
@@ -27,8 +29,34 @@ services:
       net.ipv4.ip_forward: "1"
       net.ipv4.conf.all.src_valid_mark: "1"
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:3000/api/health"]
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:3000/ui/api/health"]
       interval: 30s
       timeout: 5s
       retries: 3
       start_period: 20s
+    networks:
+      - iptv-internal
+
+  iptv-go-proxy:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        UI_URL: ${UI_URL:-http://localhost:3000/ui}
+    container_name: iptv-go-proxy
+    restart: unless-stopped
+    command: ["/usr/local/bin/iptv-go-proxy"]
+    environment:
+      GO_PROXY_ADDR: :8080
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    networks:
+      - iptv-internal
+
+networks:
+  iptv-internal:
+    driver: bridge
