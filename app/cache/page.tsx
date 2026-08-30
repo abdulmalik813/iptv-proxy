@@ -88,7 +88,7 @@ export default function CachePage() {
       const response = await fetch(`/api/system/cache?key=${encodeURIComponent(key)}`, { method: 'POST' });
       const payload = await responseJson(response);
       if (!response.ok || !payload.success) throw new Error(String(payload.error || `Refresh failed (HTTP ${response.status}).`));
-      setMessage('Cache refreshed successfully. The old value stayed active until the new response was validated.');
+      setMessage('Cache refreshed successfully. The old value stayed active until the new response was validated and atomically replaced.');
       await load();
     } catch (err) { setError(err instanceof Error ? err.message : String(err)); }
     finally { setBusyKey(null); }
@@ -100,20 +100,20 @@ export default function CachePage() {
       const response = await fetch(`/api/system/cache?key=${encodeURIComponent(key)}`, { method: 'DELETE' });
       const payload = await responseJson(response);
       if (!response.ok || !payload.success) throw new Error(String(payload.error || `Purge failed (HTTP ${response.status}).`));
-      setMessage('Cache entry purged. The next IPTV request will fetch fresh data directly from the provider.');
+      setMessage('Cache purged safely: fresh provider data was fetched and validated before the old value was atomically replaced.');
       await load();
     } catch (err) { setError(err instanceof Error ? err.message : String(err)); }
     finally { setBusyKey(null); }
   };
 
   const purgeAll = async () => {
-    if (!window.confirm('Purge every IPTV metadata cache entry? The next requests will fetch fresh data from each provider.')) return;
+    if (!window.confirm('Safely rebuild every active IPTV metadata cache entry from its provider? Existing values remain available until each replacement is validated.')) return;
     setPurgingAll(true); setError(null); setMessage(null);
     try {
       const response = await fetch('/api/system/cache', { method: 'DELETE' });
       const payload = await responseJson(response);
       if (!response.ok || !payload.success) throw new Error(String(payload.error || `Purge failed (HTTP ${response.status}).`));
-      setMessage(`Purged ${Number(payload.deleted || 0)} cache entries. The next requests will cold-load from the providers.`);
+      setMessage(`Safely rebuilt ${Number(payload.replaced || 0)} cache entries. Old values stayed active until their replacements were validated.`);
       await load();
     } catch (err) { setError(err instanceof Error ? err.message : String(err)); }
     finally { setPurgingAll(false); }
@@ -128,11 +128,11 @@ export default function CachePage() {
           <div className="flex flex-col gap-4 border-b border-neutral-800 pb-4 sm:flex-row sm:items-center sm:justify-between">
             <div>
               <h1 className="flex items-center gap-2 text-base font-bold uppercase text-white sm:text-lg"><Database className="h-5 w-5" /> IPTV Cache</h1>
-              <p className="mt-1 text-xs text-neutral-500">Refresh safely replaces validated metadata. Purge deletes it immediately so the next request goes to the provider.</p>
+              <p className="mt-1 text-xs text-neutral-500">Refresh and Purge both fetch and validate replacement data before atomically replacing the current cache. Cache-enabled API requests fail closed if no cache exists.</p>
             </div>
             <div className="flex gap-2">
               <button onClick={() => void load()} disabled={loading} className="flex items-center gap-2 border border-neutral-700 bg-black px-3 py-2 text-xs font-bold uppercase disabled:opacity-50"><RefreshCw className={`h-3.5 w-3.5 ${loading ? 'animate-spin' : ''}`} /> Reload</button>
-              <button onClick={() => void purgeAll()} disabled={purgingAll || entries.length === 0} className="flex items-center gap-2 border border-rose-800 bg-rose-950/30 px-3 py-2 text-xs font-bold uppercase text-rose-300 disabled:opacity-50"><Trash2 className="h-3.5 w-3.5" /> {purgingAll ? 'Purging...' : 'Purge All'}</button>
+              <button onClick={() => void purgeAll()} disabled={purgingAll || entries.length === 0} className="flex items-center gap-2 border border-rose-800 bg-rose-950/30 px-3 py-2 text-xs font-bold uppercase text-rose-300 disabled:opacity-50"><Trash2 className="h-3.5 w-3.5" /> {purgingAll ? 'Rebuilding...' : 'Purge All'}</button>
             </div>
           </div>
 
@@ -146,7 +146,7 @@ export default function CachePage() {
           </div>
 
           <div className="border border-neutral-800 bg-neutral-950">
-            {loading && entries.length === 0 ? <div className="p-8 text-center text-xs text-neutral-500">Loading cache...</div> : sorted.length === 0 ? <div className="p-8 text-center text-xs text-neutral-500">No cached IPTV metadata. The next playlist, EPG, or cacheable Xtream request will fetch from the provider.</div> : (
+            {loading && entries.length === 0 ? <div className="p-8 text-center text-xs text-neutral-500">Loading cache...</div> : sorted.length === 0 ? <div className="p-8 text-center text-xs text-neutral-500">No cached IPTV metadata is available. Cache-enabled IPTV API requests will return unavailable while Go refills the missing entry in the background.</div> : (
               <div className="overflow-x-auto">
                 <table className="w-full text-left text-xs">
                   <thead className="border-b border-neutral-800 bg-neutral-900 text-[10px] uppercase text-neutral-400"><tr><th className="p-3">Cache Key</th><th className="p-3">Size</th><th className="p-3">Fetched</th><th className="p-3">Refresh Point</th><th className="p-3 text-right">Actions</th></tr></thead>
