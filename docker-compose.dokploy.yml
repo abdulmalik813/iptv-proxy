@@ -15,6 +15,7 @@ services:
       UI_URL: ${UI_URL:?UI_URL is required}
       APP_URL: ${APP_URL:?APP_URL is required}
       GO_PROXY_ADDR: :8080
+      REDIS_ADDR: redis:6379
       COOKIE_SECURE: ${COOKIE_SECURE:-true}
       INITIAL_ADMIN_USERNAME: ${INITIAL_ADMIN_USERNAME:-admin}
       INITIAL_ADMIN_PASSWORD: ${INITIAL_ADMIN_PASSWORD:-}
@@ -22,6 +23,9 @@ services:
       VPN_CONNECT_TIMEOUT_SECONDS: ${VPN_CONNECT_TIMEOUT_SECONDS:-45}
     volumes:
       - iptv-proxy-data:/data
+    depends_on:
+      redis:
+        condition: service_healthy
     sysctls:
       net.ipv4.ip_forward: "1"
     healthcheck:
@@ -31,5 +35,18 @@ services:
       retries: 3
       start_period: 20s
 
+  redis:
+    image: redis:8-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
 volumes:
   iptv-proxy-data:
+  redis-data:
