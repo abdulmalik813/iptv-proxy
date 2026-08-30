@@ -76,6 +76,32 @@ function rowToLog(row: Record<string, unknown>): LogEntry {
   };
 }
 
+function addGroupCondition(group: string, conditions: string[]) {
+  switch (group) {
+    case 'traffic':
+      conditions.push("(category LIKE 'request.%' OR category LIKE 'upstream.%' OR category LIKE 'route.%' OR category = 'direct.route')");
+      break;
+    case 'cache':
+      conditions.push("category LIKE 'cache.%'");
+      break;
+    case 'streams':
+      conditions.push("(category LIKE 'live.%' OR category LIKE 'hls.%' OR category LIKE 'stream.%')");
+      break;
+    case 'vpn':
+      conditions.push("source IN ('vpn', 'wireguard', 'openvpn', 'vpngate', 'warp')");
+      break;
+    case 'providers':
+      conditions.push("source = 'provider'");
+      break;
+    case 'auth':
+      conditions.push("source = 'auth'");
+      break;
+    case 'system':
+      conditions.push("source = 'system'");
+      break;
+  }
+}
+
 export class LogService {
   static async writeLog(
     level: LogLevel,
@@ -167,6 +193,7 @@ export class LogService {
     level?: string;
     source?: string;
     category?: string;
+    group?: string;
     search?: string;
     limit?: number;
     offset?: number;
@@ -191,6 +218,9 @@ export class LogService {
     if (params.category && params.category !== 'all') {
       conditions.push('category = ?');
       args.push(params.category);
+    }
+    if (params.group && params.group !== 'all') {
+      addGroupCondition(params.group, conditions);
     }
     if (params.search?.trim()) {
       conditions.push('(message LIKE ? OR category LIKE ? OR source LIKE ? OR metadata_json LIKE ?)');
