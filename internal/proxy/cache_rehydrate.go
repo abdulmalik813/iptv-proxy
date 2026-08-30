@@ -3,13 +3,11 @@ package proxy
 import (
 	"context"
 	"errors"
-	"net/http"
 	"net/url"
 	"strings"
 	"time"
 
 	cachepkg "github.com/abdulmalik813/iptv-proxy/internal/cache"
-	"github.com/abdulmalik813/iptv-proxy/internal/provider"
 )
 
 func (h *Handler) RehydratePersistedCache(ctx context.Context) (int, error) {
@@ -17,62 +15,87 @@ func (h *Handler) RehydratePersistedCache(ctx context.Context) (int, error) {
 	if err != nil {
 		return 0, err
 	}
+
 	registered := 0
+	var problems []error
 	for _, entry := range entries {
-		p, endpoint, target, err := h.rebuildTargetFromCacheKey(ctx, entry.Key)
-		if err != nil {
-			continue
+		descriptor := entry.Descriptor
+		legacy := descriptor.ProviderID == "" || descriptor.Endpoint == ""
+		if legacy {
+			descriptor, err = legacyCacheDescriptor(entry.Key)
+			if err != nil {
+				problems = append(problems, err)
+				continue
+			}
 		}
+
 		ttl := time.Duration(entry.TTLSeconds) * time.Second
 		if ttl <= 0 {
 			continue
 		}
-		_, _, err = h.cache.GetOrFetch(ctx, entry.Key, ttl, func(fetchCtx context.Context) (cachepkg.Response, error) {
-			fetchCtx = ensureTrace(fetchCtx)
-			return h.fetchCacheable(fetchCtx, p, endpoint, target, http.Header{})
-		})
-		if err != nil && !errors.Is(err, cachepkg.ErrCacheUnavailable) {
+		spec := h.cacheSpecFromDescriptor(descriptor, ttl)
+		if legacy || entry.Key != spec.Key {
+			err = h.cache.MigrateLegacy(ctx, entry.Key, spec)
+		} else {
+			err = h.cache.Register(ctx, spec)
+		}
+		if err != nil {
+			problems = append(problems, err)
+			h.trace(ensureTrace(ctx), "warning", "cache.rehydrate.failed", "Unable to restore persisted cache refresh job", map[string]any{
+				"cacheKey": entry.Key,
+				"providerId": descriptor.ProviderID,
+				"endpoint": descriptor.Endpoint,
+				"action": descriptor.Action(),
+				"error": err.Error(),
+			})
 			continue
 		}
 		registered++
+		h.trace(ensureTrace(ctx), "info", "cache.rehydrate.success", "Persisted cache refresh job restored", map[string]any{
+			"cacheKey": spec.Key,
+			"providerId": descriptor.ProviderID,
+			"endpoint": descriptor.Endpoint,
+			"action": descriptor.Action(),
+			"migrated": legacy || entry.Key != spec.Key,
+		})
 	}
-	return registered, nil
+	return registered, errors.Join(problems...)
 }
 
-func (h *Handler) rebuildTargetFromCacheKey(ctx context.Context, key string) (provider.Provider, string, *url.URL, error) {
+func legacyCacheDescriptor(key string) (cachepkg.Descriptor, error) {
 	const prefix = "iptv:cache:"
 	if !strings.HasPrefix(key, prefix) {
-		return provider.Provider{}, "", nil, errors.New("invalid cache key")
+		return cachepkg.Descriptor{}, errors.New("invalid legacy cache key")
 	}
-	parts := strings.Split(strings.TrimPrefix(key, prefix), ":")
-	if len(parts) < 3 {
-		return provider.Provider{}, "", nil, errors.New("invalid cache key")
-	}
-	providerID := parts[0]
-	endpoint := parts[1]
-	cachedPath := parts[2]
 
-	p, err := h.resolver.ProviderByID(ctx, providerID)
-	if err != nil {
-		return provider.Provider{}, "", nil, err
+	parts := strings.SplitN(strings.TrimPrefix(key, prefix), ":", 4)
+	if len(parts) < 3 || parts[0] == "" || parts[1] == "" {
+		return cachepkg.Descriptor{}, errors.New("invalid legacy cache key")
 	}
-	base, err := url.Parse(strings.TrimSuffix(p.Host, "/"))
-	if err != nil {
-		return provider.Provider{}, "", nil, err
-	}
-	base.Path = strings.TrimSuffix(base.Path, "/") + "/" + strings.TrimPrefix(cachedPath, "/")
-	q := base.Query()
-	if endpoint == "player_api.php" || endpoint == "get.php" || endpoint == "xmltv.php" {
-		q.Set("username", p.UpstreamUsername)
-		q.Set("password", p.UpstreamPassword)
-	}
-	for i := 3; i < len(parts); i++ {
-		name, value, ok := strings.Cut(parts[i], "=")
-		if !ok || name == "" {
-			continue
+	query := url.Values{}
+	if len(parts) == 4 && parts[3] != "" {
+		var currentName string
+		for _, token := range strings.Split(parts[3], ":") {
+			name, value, ok := strings.Cut(token, "=")
+			if ok && name != "" {
+				currentName = name
+				query.Set(name, value)
+				continue
+			}
+			if currentName != "" {
+				values := query[currentName]
+				if len(values) > 0 {
+					values[len(values)-1] += ":" + token
+					query[currentName] = values
+				}
+			}
 		}
-		q.Set(name, value)
 	}
-	base.RawQuery = q.Encode()
-	return p, endpoint, base, nil
+
+	return cachepkg.Descriptor{
+		ProviderID: parts[0],
+		Endpoint:   parts[1],
+		Query:      query.Encode(),
+		Headers:    metadataHeaders(nil),
+	}, nil
 }
