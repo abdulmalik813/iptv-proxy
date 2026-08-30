@@ -168,14 +168,16 @@ test('Redis-backed Go test suite executes a matrix of 100 cache scenarios', asyn
   assert.match(scenarios, /TestLegacyMigrationPublishesCanonicalEntryBeforeDeletingDuplicate/);
 });
 
-test('cached M3U playlists rewrite playable URLs through the public proxy', async () => {
+test('cached M3U playlists personalize playable URLs for the authenticated client user', async () => {
   const cacheProxy = compact(await source('internal/proxy/cache_proxy.go'));
   const m3u = await source('internal/proxy/m3u.go');
   assert.match(cacheProxy, /endpoint == "get\.php"/);
-  assert.match(cacheProxy, /rewriteM3UPlaylist/);
-  assert.match(m3u, /p\.LocalUsername/);
-  assert.match(m3u, /p\.LocalPassword/);
+  assert.match(cacheProxy, /rewriteM3UPlaylist\(p, clientUser, body\)/);
+  assert.match(m3u, /clientUser\.Username/);
+  assert.match(m3u, /clientUser\.Password/);
   assert.match(m3u, /p\.Route/);
+  assert.doesNotMatch(m3u, /p\.LocalUsername/);
+  assert.doesNotMatch(m3u, /p\.LocalPassword/);
   assert.match(m3u, /case "live", "movie", "series", "timeshift"/);
 });
 
@@ -245,4 +247,33 @@ test('Go receives sensitive provider configuration only through the internal aut
   assert.match(registry, /Authorization/);
   assert.match(registry, /Bearer/);
   assert.match(registry, /127\.0\.0\.1:3000/);
+});
+
+test('provider client users are first-class and authenticate independently', async () => {
+  const migrations = await source('lib/db/migrations.ts');
+  const service = await source('lib/services/provider-user.service.ts');
+  const registry = await source('internal/provider/registry.go');
+  const handlerTests = await source('internal/proxy/direct_test.go');
+  assert.match(migrations, /CREATE TABLE IF NOT EXISTS provider_users/);
+  assert.match(migrations, /UNIQUE \(provider_id, username\)/);
+  assert.match(service, /createUser/);
+  assert.match(service, /updateUser/);
+  assert.match(service, /deleteUser/);
+  assert.match(registry, /func \(p Provider\) Authenticate/);
+  assert.match(registry, /user\.Enabled != 1/);
+  assert.match(handlerTests, /TestBuildUpstreamURLAcceptsSecondProviderUser/);
+  assert.match(handlerTests, /TestBuildUpstreamURLRejectsDisabledProviderUser/);
+});
+
+test('administrator password changes invalidate older sessions', async () => {
+  const migrations = await source('lib/db/migrations.ts');
+  const session = await source('lib/auth/session.ts');
+  const passwordRoute = await source('app/api/auth/password/route.ts');
+  const settingsPage = await source('app/settings/page.tsx');
+  assert.match(migrations, /session_version/);
+  assert.match(session, /sessionVersion/);
+  assert.match(session, /sessionVersion !== payload\.sessionVersion/);
+  assert.match(passwordRoute, /newSessionVersion = user\.session_version \+ 1/);
+  assert.match(passwordRoute, /Previous sessions were invalidated/);
+  assert.match(settingsPage, /Update password/);
 });
