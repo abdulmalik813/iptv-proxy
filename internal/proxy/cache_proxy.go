@@ -123,20 +123,20 @@ func (h *Handler) fetchCacheable(ctx context.Context, p provider.Provider, endpo
 		itemsForLog = itemCount
 	}
 	h.trace(ctx, "info", "upstream.response", "Incoming metadata response from IPTV provider", map[string]any{
-		"direction":    "incoming",
-		"method":       http.MethodGet,
-		"url":          outgoingURL,
-		"outgoingUrl":  outgoingURL,
-		"providerId":   p.ID,
-		"providerName": p.Name,
-		"endpoint":     endpoint,
-		"action":       target.Query().Get("action"),
-		"status":       resp.StatusCode,
-		"contentType":  resp.Header.Get("Content-Type"),
+		"direction":     "incoming",
+		"method":        http.MethodGet,
+		"url":           outgoingURL,
+		"outgoingUrl":   outgoingURL,
+		"providerId":    p.ID,
+		"providerName":  p.Name,
+		"endpoint":      endpoint,
+		"action":        target.Query().Get("action"),
+		"status":        resp.StatusCode,
+		"contentType":   resp.Header.Get("Content-Type"),
 		"contentLength": resp.ContentLength,
-		"bytes":        len(body),
-		"items":        itemsForLog,
-		"elapsedMs":    time.Since(started).Milliseconds(),
+		"bytes":         len(body),
+		"items":         itemsForLog,
+		"elapsedMs":     time.Since(started).Milliseconds(),
 	})
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return cachepkg.Response{}, fmt.Errorf("provider returned HTTP %d", resp.StatusCode)
