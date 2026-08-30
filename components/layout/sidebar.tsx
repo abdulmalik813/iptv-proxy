@@ -51,7 +51,7 @@ const groups = [
   },
 ];
 
-const brandIconPath = `${process.env.NEXT_PUBLIC_UI_BASE_PATH || ''}/iptv-proxy-icon.png`;
+const brandIconPath = `${process.env.NEXT_PUBLIC_UI_BASE_PATH || ''}/iptv-proxy-logo.png`;
 
 export function Sidebar({ user, onLogout, mobileOpen = false, setMobileOpen }: SidebarProps) {
   const pathname = usePathname();
