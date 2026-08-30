@@ -6,6 +6,10 @@ async function source(path) {
   return readFile(new URL(`../${path}`, import.meta.url), 'utf8');
 }
 
+function compact(value) {
+  return value.replace(/\s+/g, ' ');
+}
+
 test('Redis is present in local and Dokploy compose files', async () => {
   for (const path of ['docker-compose.yml', 'docker-compose.dokploy.yml']) {
     const compose = await source(path);
@@ -26,19 +30,33 @@ test('Go route resolver supports explicit provider routes before default provide
 });
 
 test('Go cache cold-loads provider data and refreshes automatically at 30 percent remaining', async () => {
-  const cache = await source('internal/cache/manager.go');
+  const cache = compact(await source('internal/cache/manager.go'));
   assert.match(cache, /refreshThreshold = 0\.30/);
   assert.match(cache, /SetNX/);
-  assert.match(cache, /fresh, err := fetch\(ctx\)/);
+  assert.match(cache, /fresh\s*,\s*err\s*:=\s*fetch\(ctx\)/);
   assert.match(cache, /time\.AfterFunc/);
-  assert.match(cache, /1-refreshThreshold/);
-  assert.match(cache, /m\.put\(refreshCtx, key, ttl, fresh\)/);
-  assert.doesNotMatch(cache, /m\.client\.Del\([^\n]*,\s*key\s*\)/);
+  assert.match(cache, /1\s*-\s*refreshThreshold/);
+  assert.match(cache, /m\.put\(refreshCtx\s*,\s*key\s*,\s*ttl\s*,\s*fresh\)/);
+  assert.doesNotMatch(cache, /Del\([^)]*,\s*key\s*\)/);
 });
 
 test('cache duration zero bypasses Redis and calls the provider directly', async () => {
-  const cache = await source('internal/cache/manager.go');
-  assert.match(cache, /if ttl <= 0 \{\s*resp, err := fetch\(ctx\)/s);
+  const cache = compact(await source('internal/cache/manager.go'));
+  assert.match(cache, /if ttl\s*<=\s*0\s*\{\s*resp\s*,\s*err\s*:=\s*fetch\(ctx\)/);
+});
+
+test('cache runtime management keeps refresh separate from purge', async () => {
+  const cache = compact(await source('internal/cache/manager.go'));
+  const main = await source('cmd/proxy/main.go');
+  const route = await source('app/api/system/cache/route.ts');
+  assert.match(cache, /RefreshNow/);
+  assert.match(cache, /PurgeAll/);
+  assert.match(cache, /spec\.fetch\(refreshCtx\)/);
+  assert.match(main, /\/internal\/cache/);
+  assert.match(main, /\/internal\/cache\/refresh/);
+  assert.match(route, /INTERNAL_API_TOKEN/);
+  assert.match(route, /method: 'POST'/);
+  assert.match(route, /method: 'DELETE'/);
 });
 
 test('cached IPTV metadata validates replacements before storing them', async () => {
@@ -53,9 +71,9 @@ test('cached IPTV metadata validates replacements before storing them', async ()
 });
 
 test('cached M3U playlists rewrite playable URLs through the public proxy', async () => {
-  const handler = await source('internal/proxy/handler.go');
+  const handler = compact(await source('internal/proxy/handler.go'));
   const m3u = await source('internal/proxy/m3u.go');
-  assert.match(handler, /endpoint == "get\.php"/);
+  assert.match(handler, /endpoint\s*==\s*"get\.php"/);
   assert.match(handler, /rewriteM3UPlaylist/);
   assert.match(m3u, /p\.LocalUsername/);
   assert.match(m3u, /p\.LocalPassword/);
@@ -71,6 +89,24 @@ test('HLS playlists rewrite nested playlists segments keys and maps back through
   assert.match(handler, /ResolveReference/);
   assert.match(handler, /\/_hls\//);
   assert.match(handler, /hls:/);
+});
+
+test('provider catch-up supports path and streaming timeshift forms', async () => {
+  const handler = compact(await source('internal/proxy/handler.go'));
+  const tests = await source('internal/proxy/direct_test.go');
+  assert.match(handler, /case\s+"timeshift"/);
+  assert.match(handler, /timeshift\.php/);
+  assert.match(tests, /TestBuildUpstreamURLTimeshiftPath/);
+  assert.match(tests, /TestBuildUpstreamURLStreamingTimeshiftQuery/);
+});
+
+test('VOD and series proxying preserve HTTP range semantics', async () => {
+  const tests = await source('internal/proxy/direct_test.go');
+  assert.match(tests, /Range/);
+  assert.match(tests, /If-Range/);
+  assert.match(tests, /StatusPartialContent/);
+  assert.match(tests, /Content-Range/);
+  assert.match(tests, /Accept-Ranges/);
 });
 
 test('continuous live streams use one upstream session with per-viewer queues', async () => {
