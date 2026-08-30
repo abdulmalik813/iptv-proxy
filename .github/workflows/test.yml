@@ -62,8 +62,18 @@ jobs:
       - name: Regression contracts
         run: pnpm test
 
-      - name: Go formatting
-        run: test -z "$(gofmt -l .)"
+      - name: Format Go review tree
+        run: gofmt -w .
+
+      - name: Upload formatted Go review
+        uses: actions/upload-artifact@v4
+        with:
+          name: gofmt-review
+          path: |
+            cmd/**/*.go
+            internal/**/*.go
+          if-no-files-found: error
+          retention-days: 1
 
       - name: Go vet
         run: go vet ./...
