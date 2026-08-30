@@ -16,6 +16,7 @@ const RESERVED_ROUTES = new Set([
   'system',
   'health',
   '_next',
+  '_hls',
   'public',
   'favicon.ico',
   'player_api.php',
@@ -24,6 +25,8 @@ const RESERVED_ROUTES = new Set([
   'live',
   'movie',
   'series',
+  'timeshift',
+  'streaming',
 ]);
 
 export function normalizeRoute(route: string): string {
