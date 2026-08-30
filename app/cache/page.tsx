@@ -1,7 +1,7 @@
 'use client';
 
 import * as React from 'react';
-import { Database, Play, RefreshCw, RotateCcw, Terminal } from 'lucide-react';
+import { Database, RefreshCw, RotateCcw, Terminal } from 'lucide-react';
 import { AppShell } from '@/components/layout/app-shell';
 import { PageHeader } from '@/components/layout/page-header';
 import { Alert, AlertDescription } from '@/components/ui/alert';
@@ -54,7 +54,6 @@ type CacheEnvelope = {
   data?: CacheEntry[] | Record<string, unknown>;
   stats?: CacheStats;
   error?: string;
-  replaced?: number;
 };
 
 type LogEnvelope = { success?: boolean; data?: LogItem[] };
@@ -98,9 +97,8 @@ export default function CachePage() {
   const [stats, setStats] = React.useState<CacheStats>({ entries: 0, bytes: 0, registeredRefreshes: 0 });
   const [logs, setLogs] = React.useState<LogItem[]>([]);
   const [loading, setLoading] = React.useState(true);
-  const [starting, setStarting] = React.useState(false);
+  const [refreshingAll, setRefreshingAll] = React.useState(false);
   const [busyKey, setBusyKey] = React.useState<string | null>(null);
-  const [repullingAll, setRepullingAll] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
   const [message, setMessage] = React.useState<string | null>(null);
 
@@ -143,8 +141,8 @@ export default function CachePage() {
     [entries],
   );
 
-  const startPull = async () => {
-    setStarting(true);
+  const refreshAll = async () => {
+    setRefreshingAll(true);
     setError(null);
     setMessage(null);
     try {
@@ -155,19 +153,19 @@ export default function CachePage() {
       const failed = Number(data.failed || 0);
       if (!response.ok || (!payload.success && succeeded === 0)) {
         const errors = Array.isArray(data.errors) ? data.errors.join('\n') : '';
-        throw new Error(payload.error || errors || `Cache pull failed (HTTP ${response.status}).`);
+        throw new Error(payload.error || errors || `Cache refresh failed (HTTP ${response.status}).`);
       }
-      setMessage(`Cache pull completed: ${succeeded} succeeded${failed ? `, ${failed} failed` : ''}.`);
+      setMessage(`Cache refresh completed: ${succeeded} succeeded${failed ? `, ${failed} failed` : ''}. Missing heavy-cache entries were created automatically.`);
       if (Array.isArray(data.errors) && data.errors.length) setError(data.errors.join('\n'));
       await load();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
-      setStarting(false);
+      setRefreshingAll(false);
     }
   };
 
-  const repullEntry = async (key: string) => {
+  const refreshEntry = async (key: string) => {
     setBusyKey(key);
     setError(null);
     setMessage(null);
@@ -175,33 +173,14 @@ export default function CachePage() {
       const response = await fetch(apiPath(`/api/system/cache?key=${encodeURIComponent(key)}`), { method: 'DELETE' });
       const payload = await readJson<CacheEnvelope>(response);
       if (!response.ok || !payload.success) {
-        throw new Error(payload.error || `Cache repull failed (HTTP ${response.status}).`);
+        throw new Error(payload.error || `Cache refresh failed (HTTP ${response.status}).`);
       }
-      setMessage('Fresh provider data was validated and published without interrupting the active cache.');
+      setMessage('Fresh provider data was validated and published for this cache entry without interrupting the active cache.');
       await load();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setBusyKey(null);
-    }
-  };
-
-  const repullAll = async () => {
-    setRepullingAll(true);
-    setError(null);
-    setMessage(null);
-    try {
-      const response = await fetch(apiPath('/api/system/cache'), { method: 'DELETE' });
-      const payload = await readJson<CacheEnvelope>(response);
-      if (!response.ok || !payload.success) {
-        throw new Error(payload.error || `Cache repull failed (HTTP ${response.status}).`);
-      }
-      setMessage(`Repulled ${Number(payload.replaced || 0)} cache entries.`);
-      await load();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setRepullingAll(false);
     }
   };
 
@@ -214,15 +193,11 @@ export default function CachePage() {
           <>
             <Button variant="outline" onClick={() => void load()} disabled={loading}>
               <RefreshCw className={loading ? 'animate-spin' : ''} />
-              Refresh
+              Reload status
             </Button>
-            <Button variant="outline" onClick={() => void repullAll()} disabled={repullingAll || entries.length === 0}>
-              <RotateCcw className={repullingAll ? 'animate-spin' : ''} />
-              {repullingAll ? 'Repulling…' : 'Repull all'}
-            </Button>
-            <Button onClick={() => void startPull()} disabled={starting}>
-              <Play />
-              {starting ? 'Pulling…' : 'Start pull'}
+            <Button onClick={() => void refreshAll()} disabled={refreshingAll}>
+              <RotateCcw className={refreshingAll ? 'animate-spin' : ''} />
+              {refreshingAll ? 'Refreshing…' : 'Refresh all cache'}
             </Button>
           </>
         }
@@ -243,8 +218,8 @@ export default function CachePage() {
         <EmptyState
           icon={<Database className="size-6" />}
           title="Cache is empty"
-          description="Pull provider metadata to populate Redis."
-          action={<Button size="sm" onClick={() => void startPull()} disabled={starting}><Play />Start pull</Button>}
+          description="Refresh all cache to pull the standard heavy provider datasets into Redis."
+          action={<Button size="sm" onClick={() => void refreshAll()} disabled={refreshingAll}><RotateCcw className={refreshingAll ? 'animate-spin' : ''} />{refreshingAll ? 'Refreshing…' : 'Refresh all cache'}</Button>}
         />
       ) : (
         <Card>
@@ -280,9 +255,9 @@ export default function CachePage() {
                         </Badge>
                       </TableCell>
                       <TableCell className="text-right">
-                        <Button variant="outline" size="sm" onClick={() => void repullEntry(entry.key)} disabled={busyKey === entry.key}>
+                        <Button variant="outline" size="sm" onClick={() => void refreshEntry(entry.key)} disabled={busyKey === entry.key || refreshingAll}>
                           <RotateCcw className={busyKey === entry.key ? 'animate-spin' : ''} />
-                          Repull
+                          Refresh
                         </Button>
                       </TableCell>
                     </TableRow>
