@@ -200,7 +200,7 @@ export default function DashboardPage() {
 
       <div className="grid gap-6 xl:grid-cols-3">
         <Card className="xl:col-span-2">
-          <CardHeader className="flex-row items-center justify-between gap-4">
+          <CardHeader className="gap-4 sm:flex-row sm:items-center sm:justify-between">
             <div>
               <CardTitle>Providers</CardTitle>
               <CardDescription>Configured upstream routes and their current state.</CardDescription>
@@ -279,7 +279,7 @@ export default function DashboardPage() {
       </div>
 
       <Card>
-        <CardHeader className="flex-row items-center justify-between gap-4">
+        <CardHeader className="gap-4 sm:flex-row sm:items-center sm:justify-between">
           <div>
             <CardTitle>Recent warnings</CardTitle>
             <CardDescription>Latest warning events from the application log.</CardDescription>
