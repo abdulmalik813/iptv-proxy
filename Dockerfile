@@ -12,7 +12,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     make \
     g++ \
   && rm -rf /var/lib/apt/lists/*
-COPY package.json ./
+COPY package.json pnpm-workspace.yaml ./
 RUN pnpm install --no-frozen-lockfile
 
 FROM base AS builder
