@@ -9,8 +9,6 @@ services:
       - NET_ADMIN
     devices:
       - /dev/net/tun:/dev/net/tun
-    ports:
-      - "3000:3000"
     environment:
       NODE_ENV: production
       DATABASE_PATH: /data/iptv-proxy.db
