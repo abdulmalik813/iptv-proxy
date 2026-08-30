@@ -28,7 +28,7 @@ func TestReplaceXMLTVIconOnlyTouchesIconSrc(t *testing.T) {
 	body := []byte(`<tv><channel id="a"><icon src="https://provider.test/logo.png"/><display-name>One</display-name></channel><programme channel="a"><icon src='https://provider.test/show.jpg'/></programme></tv>`)
 	rewrites := map[string]string{
 		"https://provider.test/logo.png": "https://proxy.test/p/_artwork/channel",
-		"https://provider.test/show.jpg":  "https://proxy.test/p/_artwork/show",
+		"https://provider.test/show.jpg": "https://proxy.test/p/_artwork/show",
 	}
 	got := xmlIconTag.ReplaceAllFunc(body, func(tag []byte) []byte {
 		tag = replaceArtworkAttributeValues(tag, xmlSrcDouble, rewrites)
