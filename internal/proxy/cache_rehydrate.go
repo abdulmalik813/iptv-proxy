@@ -29,8 +29,37 @@ func (h *Handler) RehydratePersistedCache(ctx context.Context) (int, error) {
 			}
 		}
 
+		query, err := url.ParseQuery(descriptor.Query)
+		if err != nil {
+			problems = append(problems, err)
+			continue
+		}
+		if !isCacheable(descriptor.Endpoint, query) {
+			if err := h.cache.Remove(ctx, entry.Key); err != nil {
+				problems = append(problems, err)
+				h.trace(ensureTrace(ctx), "warning", "cache.rehydrate.prune_failed", "Unable to remove obsolete cache entry", map[string]any{
+					"cacheKey":   entry.Key,
+					"providerId": descriptor.ProviderID,
+					"endpoint":   descriptor.Endpoint,
+					"action":     descriptor.Action(),
+					"error":      err.Error(),
+				})
+				continue
+			}
+			h.trace(ensureTrace(ctx), "info", "cache.rehydrate.pruned", "Removed cache entry that is no longer part of the shared cache policy", map[string]any{
+				"cacheKey":   entry.Key,
+				"providerId": descriptor.ProviderID,
+				"endpoint":   descriptor.Endpoint,
+				"action":     descriptor.Action(),
+			})
+			continue
+		}
+
 		ttl := time.Duration(entry.TTLSeconds) * time.Second
 		if ttl <= 0 {
+			if err := h.cache.Remove(ctx, entry.Key); err != nil {
+				problems = append(problems, err)
+			}
 			continue
 		}
 		spec := h.cacheSpecFromDescriptor(descriptor, ttl)
