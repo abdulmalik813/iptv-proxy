@@ -22,8 +22,12 @@ interface ProviderTestData {
   elapsedMs: number;
   testedAt: string;
   upstreamStatus?: number;
+  upstreamStatusText?: string | null;
   rawResponse?: string;
   rawContentType?: string;
+  finalUrl?: string;
+  requestMethod?: string;
+  responseHeaders?: Record<string, string>;
   account?: {
     username: string | null;
     status: string | null;
@@ -74,12 +78,6 @@ async function parseResponse(response: Response): Promise<Record<string, unknown
   } catch {
     return { success: false, error: raw };
   }
-}
-
-function isHtml(data: ProviderTestData | null) {
-  if (!data?.rawResponse) return false;
-  const contentType = (data.rawContentType || '').toLowerCase();
-  return contentType.includes('html') || /^\s*<!doctype html|^\s*<html[\s>]/i.test(data.rawResponse);
 }
 
 export default function ProviderTestsPage() {
@@ -182,7 +180,7 @@ export default function ProviderTestsPage() {
                 <FlaskConical className="h-5 w-5" /> Provider Account Tests
               </h1>
               <p className="mt-1 text-xs text-neutral-500">
-                JSON account data is parsed normally. HTML responses are rendered directly below for inspection.
+                Successful Xtream responses show account details. Failed HTML or text responses are shown as HTTP diagnostics without executing provider markup.
               </p>
             </div>
             <div className="flex gap-2">
@@ -204,7 +202,7 @@ export default function ProviderTestsPage() {
               const state = results[provider.id] || emptyState;
               const account = state.data?.account;
               const server = state.data?.server;
-              const htmlResponse = isHtml(state.data);
+              const headers = Object.entries(state.data?.responseHeaders || {});
               return (
                 <section key={provider.id} className="border border-neutral-800 bg-neutral-950">
                   <div className="flex flex-col gap-3 border-b border-neutral-800 p-4 sm:flex-row sm:items-center sm:justify-between">
@@ -223,21 +221,51 @@ export default function ProviderTestsPage() {
                   </div>
 
                   {state.error && (
-                    <div className="m-4 space-y-3 border border-rose-900 bg-rose-950/30 p-3 text-xs text-rose-300">
+                    <div className="m-4 space-y-4 border border-rose-900 bg-rose-950/30 p-3 text-xs text-rose-300">
                       <div className="flex items-center gap-2 font-bold uppercase"><XCircle className="h-4 w-4" /> {state.error}</div>
-                      {state.data?.rawResponse && htmlResponse && (
-                        <div className="overflow-hidden border border-neutral-700 bg-white text-black">
-                          <div className="border-b border-neutral-300 bg-neutral-100 px-3 py-2 text-[10px] font-bold uppercase text-neutral-700">
-                            Rendered HTML Response · HTTP {state.data.upstreamStatus ?? 'N/A'} · {state.data.rawContentType || 'text/html'}
-                          </div>
-                          <div
-                            className="min-h-[420px] w-full overflow-auto bg-white p-0 font-sans text-black"
-                            dangerouslySetInnerHTML={{ __html: state.data.rawResponse }}
-                          />
+
+                      {state.data && (
+                        <div className="grid gap-px overflow-hidden border border-neutral-800 bg-neutral-800 sm:grid-cols-2 lg:grid-cols-4">
+                          {[
+                            ['HTTP Status', state.data.upstreamStatus ? `${state.data.upstreamStatus}${state.data.upstreamStatusText ? ` ${state.data.upstreamStatusText}` : ''}` : 'N/A'],
+                            ['Content Type', display(state.data.rawContentType)],
+                            ['Response Time', `${state.data.elapsedMs} ms`],
+                            ['Method', display(state.data.requestMethod)],
+                          ].map(([label, value]) => (
+                            <div key={label} className="bg-black p-3">
+                              <div className="text-[9px] font-bold uppercase text-neutral-600">{label}</div>
+                              <div className="mt-1 break-words text-xs text-neutral-200">{value}</div>
+                            </div>
+                          ))}
                         </div>
                       )}
-                      {state.data?.rawResponse && !htmlResponse && (
-                        <pre className="max-h-80 overflow-auto whitespace-pre-wrap break-all bg-black p-3 text-[11px] leading-relaxed text-rose-200">{state.data.rawResponse}</pre>
+
+                      {state.data?.finalUrl && (
+                        <div>
+                          <div className="mb-1 text-[9px] font-bold uppercase tracking-wider text-neutral-500">Final URL</div>
+                          <div className="break-all border border-neutral-800 bg-black p-3 text-[11px] text-neutral-300">{state.data.finalUrl}</div>
+                        </div>
+                      )}
+
+                      {headers.length > 0 && (
+                        <div>
+                          <div className="mb-1 text-[9px] font-bold uppercase tracking-wider text-neutral-500">Response Headers</div>
+                          <div className="overflow-hidden border border-neutral-800 bg-black">
+                            {headers.map(([name, value]) => (
+                              <div key={name} className="grid gap-1 border-b border-neutral-900 px-3 py-2 last:border-b-0 sm:grid-cols-[180px_1fr]">
+                                <span className="text-[10px] font-bold text-neutral-500">{name}</span>
+                                <span className="break-all text-[11px] text-neutral-300">{value}</span>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                      {state.data?.rawResponse && (
+                        <div>
+                          <div className="mb-1 text-[9px] font-bold uppercase tracking-wider text-neutral-500">Raw Response Body</div>
+                          <pre className="max-h-[420px] overflow-auto whitespace-pre-wrap break-all border border-neutral-800 bg-black p-3 text-[11px] leading-relaxed text-neutral-300">{state.data.rawResponse}</pre>
+                        </div>
                       )}
                     </div>
                   )}
