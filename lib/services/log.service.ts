@@ -13,14 +13,14 @@ global.__logEventEmitter = logEmitter;
 export { logEmitter };
 
 const SENSITIVE_PATTERNS = [
-  /password["':\s=]+([^"\s,;]+)/gi,
-  /upstream_password["':\s=]+([^"\s,;]+)/gi,
-  /local_password["':\s=]+([^"\s,;]+)/gi,
-  /privatekey["':\s=]+([^"\s,;]+)/gi,
-  /private_key["':\s=]+([^"\s,;]+)/gi,
-  /presharedkey["':\s=]+([^"\s,;]+)/gi,
-  /session[_-]?token["':\s=]+([^"\s,;]+)/gi,
-  /authorization["':\s=]+([^"\s,;]+)/gi,
+  /password["':\s=]+([^"\s,;&]+)/gi,
+  /upstream_password["':\s=]+([^"\s,;&]+)/gi,
+  /local_password["':\s=]+([^"\s,;&]+)/gi,
+  /privatekey["':\s=]+([^"\s,;&]+)/gi,
+  /private_key["':\s=]+([^"\s,;&]+)/gi,
+  /presharedkey["':\s=]+([^"\s,;&]+)/gi,
+  /session[_-]?token["':\s=]+([^"\s,;&]+)/gi,
+  /authorization["':\s=]+([^"\s,;&]+)/gi,
   /bearer\s+([A-Za-z0-9._~-]+)/gi,
 ];
 
