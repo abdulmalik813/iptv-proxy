@@ -4,6 +4,7 @@ import React from 'react';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import {
+  FlaskConical,
   LayoutDashboard,
   Tv,
   Shield,
@@ -11,7 +12,6 @@ import {
   Settings,
   LogOut,
   Radio,
-  Server,
 } from 'lucide-react';
 
 interface SidebarProps {
@@ -39,26 +39,25 @@ export function Sidebar({ user, onLogout, mobileOpen, setMobileOpen }: SidebarPr
   const navItems = [
     { name: 'Dashboard', href: '/dashboard', icon: LayoutDashboard },
     { name: 'Providers', href: '/providers', icon: Tv },
+    { name: 'Provider Tests', href: '/providers/tests', icon: FlaskConical },
     { name: 'VPN System', href: '/vpn', icon: Shield },
     { name: 'Live Logs', href: '/logs', icon: ScrollText },
     { name: 'Settings', href: '/settings', icon: Settings },
   ];
 
   const content = (
-    <div id="sidebar-container" className="flex flex-col h-full bg-black text-white border-r border-neutral-800 w-64 select-none">
-      {/* Brand Header */}
-      <div id="sidebar-brand" className="h-16 flex items-center gap-3 px-5 border-b border-neutral-800">
-        <div className="w-7 h-7 bg-white text-black flex items-center justify-center font-black text-xs tracking-tighter">
+    <div id="sidebar-container" className="flex h-full w-64 flex-col border-r border-neutral-800 bg-black text-white select-none">
+      <div id="sidebar-brand" className="flex h-16 items-center gap-3 border-b border-neutral-800 px-5">
+        <div className="flex h-7 w-7 items-center justify-center bg-white text-xs font-black tracking-tighter text-black">
           IP
         </div>
         <div className="flex flex-col">
           <span className="font-mono text-sm font-bold tracking-tight text-neutral-100 uppercase">IPTV PROXY</span>
-          <span className="text-[10px] text-neutral-500 font-mono tracking-wide">CORE ORCHESTRATION</span>
+          <span className="font-mono text-[10px] tracking-wide text-neutral-500">CORE ORCHESTRATION</span>
         </div>
       </div>
 
-      {/* Navigation Links */}
-      <nav id="sidebar-nav" className="flex-1 py-4 px-3 space-y-1 font-mono text-xs">
+      <nav id="sidebar-nav" className="flex-1 space-y-1 px-3 py-4 font-mono text-xs">
         <div className="px-2 py-1 text-[10px] font-semibold tracking-wider text-neutral-500 uppercase">
           MANAGEMENT
         </div>
@@ -71,41 +70,40 @@ export function Sidebar({ user, onLogout, mobileOpen, setMobileOpen }: SidebarPr
               href={item.href}
               id={`nav-link-${item.name.toLowerCase().replace(/\s+/g, '-')}`}
               onClick={() => setMobileOpen?.(false)}
-              className={`flex items-center gap-3 px-3 py-2.5 rounded-none text-xs transition-colors border ${
+              className={`flex items-center gap-3 rounded-none border px-3 py-2.5 text-xs transition-colors ${
                 isActive
-                  ? 'bg-neutral-900 text-white border-neutral-700 font-semibold shadow-xs'
-                  : 'text-neutral-400 border-transparent hover:text-neutral-200 hover:bg-neutral-900/50 hover:border-neutral-800'
+                  ? 'border-neutral-700 bg-neutral-900 font-semibold text-white shadow-xs'
+                  : 'border-transparent text-neutral-400 hover:border-neutral-800 hover:bg-neutral-900/50 hover:text-neutral-200'
               }`}
             >
-              <Icon className={`w-4 h-4 ${isActive ? 'text-white' : 'text-neutral-400'}`} />
+              <Icon className={`h-4 w-4 ${isActive ? 'text-white' : 'text-neutral-400'}`} />
               <span>{item.name}</span>
             </Link>
           );
         })}
 
-        <div className="pt-6 px-2 py-1 text-[10px] font-semibold tracking-wider text-neutral-500 uppercase">
+        <div className="px-2 pt-6 py-1 text-[10px] font-semibold tracking-wider text-neutral-500 uppercase">
           CORE ENDPOINTS
         </div>
-        <div className="px-3 py-2 border border-neutral-900 bg-neutral-950/60 text-[11px] text-neutral-400 space-y-1.5 font-mono">
+        <div className="space-y-1.5 border border-neutral-900 bg-neutral-950/60 px-3 py-2 font-mono text-[11px] text-neutral-400">
           <div className="flex items-center gap-1.5 text-neutral-300">
-            <Radio className="w-3 h-3 text-neutral-400" />
+            <Radio className="h-3 w-3 text-neutral-400" />
             <span className="font-semibold">Xtream Codes Engine</span>
           </div>
-          <div className="text-[10px] text-neutral-500 break-all">
+          <div className="break-all text-[10px] text-neutral-500">
             Proxy Port: <span className="text-neutral-300">8080 (Go Engine)</span>
           </div>
-          <div className="text-[10px] text-neutral-500 break-all">
+          <div className="break-all text-[10px] text-neutral-500">
             Admin Port: <span className="text-neutral-300">3000 (Next.js)</span>
           </div>
         </div>
       </nav>
 
-      {/* Footer User Info */}
-      <div id="sidebar-footer" className="p-3 border-t border-neutral-800 bg-neutral-950 font-mono">
+      <div id="sidebar-footer" className="border-t border-neutral-800 bg-neutral-950 p-3 font-mono">
         <div className="flex items-center justify-between px-2 py-1.5">
           <div className="flex items-center gap-2 overflow-hidden">
-            <div className="w-2 h-2 rounded-none bg-emerald-500 shrink-0" />
-            <span className="text-xs text-neutral-300 truncate font-mono">
+            <div className="h-2 w-2 shrink-0 rounded-none bg-emerald-500" />
+            <span className="truncate font-mono text-xs text-neutral-300">
               {user?.username || 'admin'}
             </span>
           </div>
@@ -113,9 +111,9 @@ export function Sidebar({ user, onLogout, mobileOpen, setMobileOpen }: SidebarPr
             id="btn-logout"
             onClick={handleLogout}
             title="Sign out"
-            className="p-1.5 text-neutral-400 hover:text-white hover:bg-neutral-900 border border-neutral-800 transition-colors cursor-pointer"
+            className="cursor-pointer border border-neutral-800 p-1.5 text-neutral-400 transition-colors hover:bg-neutral-900 hover:text-white"
           >
-            <LogOut className="w-3.5 h-3.5" />
+            <LogOut className="h-3.5 w-3.5" />
           </button>
         </div>
       </div>
@@ -124,19 +122,17 @@ export function Sidebar({ user, onLogout, mobileOpen, setMobileOpen }: SidebarPr
 
   return (
     <>
-      {/* Desktop Sidebar */}
-      <aside className="hidden md:flex shrink-0 h-screen sticky top-0">
+      <aside className="sticky top-0 hidden h-screen shrink-0 md:flex">
         {content}
       </aside>
 
-      {/* Mobile Drawer */}
       {mobileOpen && (
-        <div className="fixed inset-0 z-50 md:hidden flex">
+        <div className="fixed inset-0 z-50 flex md:hidden">
           <div
             className="fixed inset-0 bg-black/80 backdrop-blur-xs"
             onClick={() => setMobileOpen?.(false)}
           />
-          <div className="relative z-10 w-64 h-full">
+          <div className="relative z-10 h-full w-64">
             {content}
           </div>
         </div>
