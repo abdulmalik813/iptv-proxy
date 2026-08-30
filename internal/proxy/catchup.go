@@ -76,15 +76,14 @@ func timeshiftPathParts(target *url.URL) ([]string, int, bool) {
 		return nil, -1, false
 	}
 	segments := strings.Split(strings.Trim(target.Path, "/"), "/")
-	for index, segment := range segments {
-		if !strings.EqualFold(segment, "timeshift") {
-			continue
+	// Search backward from the last position that can still contain the complete
+	// six-segment Xtream route. A provider may itself be mounted below a base path
+	// containing the word "timeshift"; the endpoint nearest the stream id is the
+	// actual route and must win over an earlier base-path segment.
+	for index := len(segments) - 6; index >= 0; index-- {
+		if strings.EqualFold(segments[index], "timeshift") {
+			return segments, index, true
 		}
-		// timeshift + username + password + duration + start + stream
-		if len(segments) < index+6 {
-			return nil, -1, false
-		}
-		return segments, index, true
 	}
 	return nil, -1, false
 }
