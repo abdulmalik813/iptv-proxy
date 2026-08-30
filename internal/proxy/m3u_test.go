@@ -15,7 +15,7 @@ func TestRewriteM3UPlaylistUsesRequestingClientCredentials(t *testing.T) {
 		UpstreamUsername: "up-user",
 		UpstreamPassword: "up-pass",
 	}
-	clientUser := provider.User{ID: "user-2", Username: "family", Password: "family-pass", Enabled: 1}
+	clientUser := provider.User{ID: "user-2", Username: "family", ClientPassword: "family-pass", Enabled: 1}
 	playlist := []byte("#EXTM3U\n#EXTINF:-1,Channel\nhttp://upstream.example:8080/live/up-user/up-pass/123.ts\n#EXTINF:-1,Movie\nhttp://upstream.example:8080/movie/up-user/up-pass/456.mp4\n")
 
 	rewritten := string(handler.rewriteM3UPlaylist(p, clientUser, playlist))
@@ -35,7 +35,7 @@ func TestRewriteM3UPlaylistUsesRequestingClientCredentials(t *testing.T) {
 func TestRewriteM3UStreamingQueryCredentials(t *testing.T) {
 	handler := &Handler{appURL: "https://iptv.example.test"}
 	p := provider.Provider{Host: "http://upstream.example", Route: "main"}
-	clientUser := provider.User{Username: "local-user", Password: "local-pass", Enabled: 1}
+	clientUser := provider.User{Username: "local-user", ClientPassword: "local-pass", Enabled: 1}
 
 	rewritten, ok := handler.rewriteM3UTarget(p, clientUser, "http://upstream.example/streaming/timeshift.php?username=up&password=secret&stream=100")
 	if !ok {
