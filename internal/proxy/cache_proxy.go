@@ -25,6 +25,7 @@ func (h *Handler) serveCached(w http.ResponseWriter, r *http.Request, p provider
 			"endpoint":     endpoint,
 			"action":       upstreamURL.Query().Get("action"),
 			"cacheKey":     spec.Key,
+			"outgoingUrl":  safeURLString(upstreamURL.String()),
 			"error":        err.Error(),
 		})
 		status := http.StatusBadGateway
@@ -64,6 +65,7 @@ func (h *Handler) serveCached(w http.ResponseWriter, r *http.Request, p provider
 		"status":         response.Status,
 		"bytes":          len(body),
 		"items":          items,
+		"outgoingUrl":    safeURLString(upstreamURL.String()),
 	})
 	w.WriteHeader(response.Status)
 	_, _ = w.Write(body)
@@ -79,7 +81,12 @@ func (h *Handler) fetchCacheable(ctx context.Context, p provider.Provider, endpo
 	// Cache validation operates on the provider's original JSON/XML/M3U bytes.
 	// Asking for identity encoding also avoids storing client-specific compressed variants.
 	req.Header.Del("Accept-Encoding")
-	h.trace(ctx, "debug", "upstream.request", "Requesting IPTV metadata from provider", map[string]any{
+	outgoingURL := safeURLString(target.String())
+	h.trace(ctx, "info", "upstream.request", "Outgoing metadata request to IPTV provider", map[string]any{
+		"direction":     "outgoing",
+		"method":        http.MethodGet,
+		"url":           outgoingURL,
+		"outgoingUrl":   outgoingURL,
 		"providerId":    p.ID,
 		"providerName":  p.Name,
 		"providerRoute": p.Route,
@@ -90,7 +97,11 @@ func (h *Handler) fetchCacheable(ctx context.Context, p provider.Provider, endpo
 
 	resp, err := h.metadataClient.Do(req)
 	if err != nil {
-		h.trace(ctx, "error", "upstream.error", "IPTV metadata provider request failed", map[string]any{
+		h.trace(ctx, "error", "upstream.error", "Outgoing metadata request to IPTV provider failed", map[string]any{
+			"direction":    "outgoing",
+			"method":       http.MethodGet,
+			"url":          outgoingURL,
+			"outgoingUrl":  outgoingURL,
 			"providerId":   p.ID,
 			"providerName": p.Name,
 			"endpoint":     endpoint,
@@ -111,13 +122,18 @@ func (h *Handler) fetchCacheable(ctx context.Context, p provider.Provider, endpo
 	if itemCountKnown {
 		itemsForLog = itemCount
 	}
-	h.trace(ctx, "debug", "upstream.response", "IPTV metadata provider responded", map[string]any{
+	h.trace(ctx, "info", "upstream.response", "Incoming metadata response from IPTV provider", map[string]any{
+		"direction":    "incoming",
+		"method":       http.MethodGet,
+		"url":          outgoingURL,
+		"outgoingUrl":  outgoingURL,
 		"providerId":   p.ID,
 		"providerName": p.Name,
 		"endpoint":     endpoint,
 		"action":       target.Query().Get("action"),
 		"status":       resp.StatusCode,
 		"contentType":  resp.Header.Get("Content-Type"),
+		"contentLength": resp.ContentLength,
 		"bytes":        len(body),
 		"items":        itemsForLog,
 		"elapsedMs":    time.Since(started).Milliseconds(),
