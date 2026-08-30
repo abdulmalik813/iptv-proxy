@@ -1,29 +1,18 @@
-import type {Metadata} from 'next';
+import type { Metadata } from 'next';
 import './globals.css';
-import { UiRouteBridge } from '@/components/ui-route-bridge';
 
 export const metadata: Metadata = {
-  title: 'IPTV Proxy - Management & Orchestration',
-  description: 'Production-ready self-hosted IPTV Proxy management application with SQLite, multi-provider Xtream routing, and WireGuard/OpenVPN/VPNGate/WARP VPN orchestration.',
-  openGraph: {
-    title: 'IPTV Proxy - Management & Orchestration',
-    description: 'Production-ready self-hosted IPTV Proxy management application with SQLite, multi-provider Xtream routing, and WireGuard/OpenVPN/VPNGate/WARP VPN orchestration.',
-    type: 'website',
+  title: {
+    default: 'IPTV Proxy',
+    template: '%s · IPTV Proxy',
   },
-  twitter: {
-    card: 'summary_large_image',
-    title: 'IPTV Proxy - Management & Orchestration',
-    description: 'Production-ready self-hosted IPTV Proxy management application with SQLite, multi-provider Xtream routing, and WireGuard/OpenVPN/VPNGate/WARP VPN orchestration.',
-  },
+  description: 'Administration console for IPTV providers, cache, VPN routing, and runtime monitoring.',
 };
 
-export default function RootLayout({children}: {children: React.ReactNode}) {
+export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en">
-      <body suppressHydrationWarning>
-        <UiRouteBridge />
-        {children}
-      </body>
+    <html lang="en" className="dark" suppressHydrationWarning>
+      <body>{children}</body>
     </html>
   );
 }

@@ -18,15 +18,18 @@ test('project identity is consistently iptv-proxy', async () => {
   assert.match(dokploy, /ghcr\.io\/abdulmalik813\/iptv-proxy:latest/);
 });
 
-test('Next.js base path is derived from UI_URL exactly once', async () => {
+test('Next.js base path is derived from UI_URL exactly once and client API calls use the shared helper', async () => {
   const config = await source('next.config.ts');
   const home = await source('app/page.tsx');
+  const api = await source('lib/client/api.ts');
 
   assert.match(config, /process\.env\.UI_URL/);
   assert.match(config, /basePath:\s*uiBasePath/);
   assert.match(home, /redirect\('\/login'\)/);
   assert.match(home, /redirect\('\/dashboard'\)/);
   assert.doesNotMatch(home, /redirect\(['"`]\/ui\//);
+  assert.match(api, /NEXT_PUBLIC_UI_BASE_PATH/);
+  assert.match(api, /return `\$\{UI_BASE\}\$\{normalized\}`/);
 });
 
 test('production compose requires public URLs and service credentials', async () => {
@@ -74,8 +77,8 @@ test('admin UI exposes Go core health state', async () => {
   assert.match(route, /127\.0\.0\.1:8080\/health/);
   assert.match(route, /AbortSignal\.timeout/);
   assert.match(route, /running/);
-  assert.match(topbar, /\/api\/system\/status/);
-  assert.match(topbar, /GO \{goRunning \? 'RUNNING' : 'OFFLINE'\}/);
+  assert.match(topbar, /apiPath\('\/api\/system\/status'\)/);
+  assert.match(topbar, /Go \{goRunning \? 'online' : 'offline'\}/);
 });
 
 test('admin UI supports persistent light and dark themes', async () => {
@@ -84,8 +87,10 @@ test('admin UI supports persistent light and dark themes', async () => {
 
   assert.match(topbar, /iptv-proxy-theme/);
   assert.match(topbar, /btn-theme-toggle/);
+  assert.match(topbar, /document\.documentElement\.classList\.toggle\('dark'/);
   assert.match(topbar, /document\.documentElement\.dataset\.theme/);
-  assert.match(css, /data-theme='light'/);
+  assert.match(css, /\.dark \{/);
+  assert.match(css, /--background:/);
 });
 
 test('WireGuard and OpenVPN reject unsafe executable directives', async () => {
@@ -135,12 +140,13 @@ test('VPN profiles expose CRUD and protect active profiles', async () => {
   }
 });
 
-test('profile validation errors render inside the editor modal', async () => {
+test('profile validation errors render inside the editor dialog', async () => {
   const page = await source('app/vpn/page.tsx');
 
   assert.match(page, /editorError/);
   assert.match(page, /setEditorError/);
   assert.match(page, /Validation error/);
+  assert.match(page, /DialogContent/);
 });
 
 test('VPNGate uses fixed credentials, refreshes before retry, and reports retry attempts', async () => {
@@ -191,6 +197,12 @@ test('logs expose authenticated collection and item CRUD for the Go core', async
   assert.match(service, /static async deleteLog/);
 });
 
+test('live logs use the explicit UI base path for HTTP and EventSource traffic', async () => {
+  const page = await source('app/logs/page.tsx');
+  assert.match(page, /fetch\(apiPath\(`/);
+  assert.match(page, /new EventSource\(apiPath\('\/api\/logs\/stream'\)\)/);
+});
+
 test('provider responses mask credentials and reserve proxy routes', async () => {
   const service = await source('lib/services/provider.service.ts');
 
@@ -217,10 +229,10 @@ test('provider account diagnostics parse valid JSON and reduce non-JSON response
   assert.match(route, /safeServerInfo/);
   assert.doesNotMatch(route, /password:\s*provider\.upstream_password/);
 
-  assert.match(page, /Test All/);
-  assert.match(page, /Test Account/);
-  assert.match(page, /Connected & Authenticated/);
-  assert.match(page, /Any non-JSON upstream response shows only its HTTP status/);
+  assert.match(page, /Test all/);
+  assert.match(page, /Test account/);
+  assert.match(page, /Connected and authenticated/);
+  assert.match(page, /Non-JSON responses are shown as HTTP status only/);
   assert.match(page, /state\.data\?\.upstreamStatus/);
   assert.doesNotMatch(page, /srcDoc=/);
   assert.doesNotMatch(page, /sandbox=""/);

@@ -1,25 +1,28 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
-import { useRouter } from 'next/navigation';
+import * as React from 'react';
 import Link from 'next/link';
 import {
-  Shield,
-  ShieldAlert,
-  ShieldCheck,
-  Tv,
-  Database,
-  Server,
   Activity,
-  AlertTriangle,
-  ArrowRight,
+  Database,
   RefreshCw,
-  Clock,
-  Radio,
-  ExternalLink,
+  Server,
+  Shield,
+  TriangleAlert,
+  Tv,
+  Users,
 } from 'lucide-react';
-import { Sidebar } from '@/components/layout/sidebar';
-import { TopBar } from '@/components/layout/top-bar';
+import { AppShell } from '@/components/layout/app-shell';
+import { PageHeader } from '@/components/layout/page-header';
+import { Alert, AlertDescription } from '@/components/ui/alert';
+import { Badge } from '@/components/ui/badge';
+import { Button, buttonVariants } from '@/components/ui/button';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { EmptyState } from '@/components/ui/empty-state';
+import { MetricCard } from '@/components/ui/metric-card';
+import { Skeleton } from '@/components/ui/skeleton';
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
+import { apiPath, readJson } from '@/lib/client/api';
 
 interface HealthData {
   tunAvailable: boolean;
@@ -46,7 +49,6 @@ interface VpnData {
   profileName: string | null;
   publicIp: string | null;
   country: string | null;
-  lastError: string | null;
 }
 
 interface ProviderSummary {
@@ -67,423 +69,246 @@ interface LogPreview {
   message: string;
 }
 
+interface SystemStatus {
+  go: {
+    running: boolean;
+    status: string;
+    latencyMs: number;
+    activeStreams: number;
+    viewers: number;
+  };
+}
+
+type Envelope<T> = { success?: boolean; data?: T; error?: string };
+
+function formatUptime(seconds = 0) {
+  const days = Math.floor(seconds / 86_400);
+  const hours = Math.floor((seconds % 86_400) / 3_600);
+  if (days > 0) return `${days}d ${hours}h`;
+  const minutes = Math.floor((seconds % 3_600) / 60);
+  return `${hours}h ${minutes}m`;
+}
+
 export default function DashboardPage() {
-  const router = useRouter();
-  const [mobileOpen, setMobileOpen] = useState(false);
-  const [user, setUser] = useState<{ username: string } | null>(null);
-  const [health, setHealth] = useState<HealthData | null>(null);
-  const [vpn, setVpn] = useState<VpnData | null>(null);
-  const [providers, setProviders] = useState<ProviderSummary[]>([]);
-  const [recentErrors, setRecentErrors] = useState<LogPreview[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
-  const [refreshTrigger, setRefreshTrigger] = useState(0);
+  const [health, setHealth] = React.useState<HealthData | null>(null);
+  const [vpn, setVpn] = React.useState<VpnData | null>(null);
+  const [providers, setProviders] = React.useState<ProviderSummary[]>([]);
+  const [recentWarnings, setRecentWarnings] = React.useState<LogPreview[]>([]);
+  const [system, setSystem] = React.useState<SystemStatus | null>(null);
+  const [loading, setLoading] = React.useState(true);
+  const [refreshing, setRefreshing] = React.useState(false);
+  const [error, setError] = React.useState<string | null>(null);
 
-  useEffect(() => {
-    let ignore = false;
-    async function load() {
-      try {
-        setRefreshing(true);
-        const [authRes, healthRes, vpnRes, provRes, logsRes] = await Promise.all([
-          fetch('/api/auth/me'),
-          fetch('/api/system/health'),
-          fetch('/api/vpn/status'),
-          fetch('/api/providers'),
-          fetch('/api/logs?level=warning&limit=5'),
-        ]);
+  const load = React.useCallback(async (manual = false) => {
+    if (manual) setRefreshing(true);
+    setError(null);
+    try {
+      const [healthResponse, vpnResponse, providersResponse, logsResponse, systemResponse] = await Promise.all([
+        fetch(apiPath('/api/system/health'), { cache: 'no-store' }),
+        fetch(apiPath('/api/vpn/status'), { cache: 'no-store' }),
+        fetch(apiPath('/api/providers'), { cache: 'no-store' }),
+        fetch(apiPath('/api/logs?level=warning&limit=5'), { cache: 'no-store' }),
+        fetch(apiPath('/api/system/status'), { cache: 'no-store' }),
+      ]);
 
-        if (authRes.status === 401) {
-          router.push('/login');
-          return;
-        }
+      const [healthPayload, vpnPayload, providersPayload, logsPayload, systemPayload] = await Promise.all([
+        readJson<Envelope<HealthData>>(healthResponse),
+        readJson<Envelope<VpnData>>(vpnResponse),
+        readJson<Envelope<ProviderSummary[]>>(providersResponse),
+        readJson<Envelope<LogPreview[]>>(logsResponse),
+        readJson<Envelope<SystemStatus>>(systemResponse),
+      ]);
 
-        const authData = await authRes.json();
-        if (ignore) return;
-        if (authData.authenticated) setUser(authData.user);
+      if (healthPayload.success && healthPayload.data) setHealth(healthPayload.data);
+      if (vpnPayload.success && vpnPayload.data) setVpn(vpnPayload.data);
+      if (providersPayload.success && providersPayload.data) setProviders(providersPayload.data);
+      if (logsPayload.success && logsPayload.data) setRecentWarnings(logsPayload.data);
+      if (systemPayload.success && systemPayload.data) setSystem(systemPayload.data);
 
-        if (healthRes.ok) {
-          const h = await healthRes.json();
-          if (ignore) return;
-          if (h.success) setHealth(h.data);
-        }
-
-        if (vpnRes.ok) {
-          const v = await vpnRes.json();
-          if (ignore) return;
-          if (v.success) setVpn(v.data);
-        }
-
-        if (provRes.ok) {
-          const p = await provRes.json();
-          if (ignore) return;
-          if (p.success) setProviders(p.data);
-        }
-
-        if (logsRes.ok) {
-          const l = await logsRes.json();
-          if (ignore) return;
-          if (l.success) setRecentErrors(l.data);
-        }
-      } catch {
-        // Ignore
-      } finally {
-        if (!ignore) {
-          setLoading(false);
-          setRefreshing(false);
-        }
-      }
+      const failed = [healthResponse, vpnResponse, providersResponse, systemResponse].find((response) => !response.ok);
+      if (failed) setError(`Some runtime data could not be loaded (HTTP ${failed.status}).`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Unable to load dashboard data.');
+    } finally {
+      setLoading(false);
+      setRefreshing(false);
     }
+  }, []);
 
+  React.useEffect(() => {
     void load();
-    const interval = setInterval(() => {
-      void load();
-    }, 10000);
+    const interval = window.setInterval(() => void load(), 10_000);
+    return () => window.clearInterval(interval);
+  }, [load]);
 
-    return () => {
-      ignore = true;
-      clearInterval(interval);
-    };
-  }, [router, refreshTrigger]);
-
-  const defaultProvider = providers.find((p) => p.is_default === 1);
+  const enabledProviders = providers.filter((provider) => provider.enabled === 1).length;
+  const defaultProvider = providers.find((provider) => provider.is_default === 1);
+  const vpnConnected = vpn?.status === 'connected';
 
   return (
-    <div className="flex h-screen bg-black text-neutral-200 font-mono overflow-hidden">
-      <Sidebar
-        user={user}
-        onLogout={() => router.push('/login')}
-        mobileOpen={mobileOpen}
-        setMobileOpen={setMobileOpen}
+    <AppShell>
+      <PageHeader
+        title="Overview"
+        description="Provider, stream, cache, VPN, and host status at a glance."
+        actions={
+          <Button variant="outline" onClick={() => void load(true)} disabled={refreshing}>
+            <RefreshCw className={refreshing ? 'animate-spin' : ''} />
+            Refresh
+          </Button>
+        }
       />
 
-      <div className="flex-1 flex flex-col min-w-0 overflow-y-auto">
-        <TopBar onToggleMobile={() => setMobileOpen(true)} />
+      {error && (
+        <Alert variant="warning">
+          <AlertDescription>{error}</AlertDescription>
+        </Alert>
+      )}
 
-        <main className="p-4 sm:p-6 lg:p-8 space-y-6 max-w-7xl">
-          {/* Header */}
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-neutral-800 pb-4">
+      {loading ? (
+        <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+          {Array.from({ length: 4 }).map((_, index) => <Skeleton key={index} className="h-28" />)}
+        </div>
+      ) : (
+        <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+          <MetricCard
+            label="VPN"
+            value={vpnConnected ? 'Connected' : vpn?.status === 'connecting' ? 'Connecting' : vpn?.status === 'error' ? 'Error' : 'Direct'}
+            description={vpnConnected ? `${vpn?.profileName || vpn.type} · ${vpn.publicIp || 'IP unavailable'}` : 'Host network egress'}
+            icon={<Shield className="size-5" />}
+            valueClassName={vpnConnected ? 'text-emerald-600 dark:text-emerald-400' : undefined}
+          />
+          <MetricCard
+            label="Providers"
+            value={`${enabledProviders} / ${providers.length}`}
+            description={defaultProvider ? `Default: ${defaultProvider.name}` : 'No default provider'}
+            icon={<Tv className="size-5" />}
+          />
+          <MetricCard
+            label="Live streams"
+            value={system?.go.activeStreams ?? 0}
+            description={`${system?.go.viewers ?? 0} active viewer${system?.go.viewers === 1 ? '' : 's'}`}
+            icon={<Users className="size-5" />}
+          />
+          <MetricCard
+            label="Database"
+            value={health?.dbSizeFormatted || 'Ready'}
+            description={health?.dbWalMode ? 'SQLite · WAL mode' : 'SQLite'}
+            icon={<Database className="size-5" />}
+          />
+        </div>
+      )}
+
+      <div className="grid gap-6 xl:grid-cols-3">
+        <Card className="xl:col-span-2">
+          <CardHeader className="gap-4 sm:flex-row sm:items-center sm:justify-between">
             <div>
-              <h1 className="text-base sm:text-lg font-bold text-white uppercase tracking-tight">
-                System Overview
-              </h1>
-              <p className="text-xs text-neutral-500">
-                Operational status of IPTV routes, VPN network tunnels, and SQLite database.
-              </p>
+              <CardTitle>Providers</CardTitle>
+              <CardDescription>Configured upstream routes and their current state.</CardDescription>
             </div>
-            <div className="flex items-center gap-2">
-              <button
-                id="btn-refresh-dashboard"
-                onClick={() => setRefreshTrigger((c) => c + 1)}
-                disabled={refreshing}
-                className="px-3 py-1.5 border border-neutral-800 bg-neutral-950 hover:bg-neutral-900 text-xs text-neutral-300 hover:text-white transition-colors cursor-pointer flex items-center gap-1.5 disabled:opacity-50"
-              >
-                <RefreshCw className={`w-3.5 h-3.5 ${refreshing ? 'animate-spin' : ''}`} />
-                <span>REFRESH</span>
-              </button>
-            </div>
-          </div>
+            <Link href="/providers" className={buttonVariants({ variant: 'outline', size: 'sm' })}>Manage</Link>
+          </CardHeader>
+          <CardContent>
+            {providers.length === 0 ? (
+              <EmptyState
+                icon={<Tv className="size-6" />}
+                title="No providers configured"
+                description="Add an Xtream provider to start routing IPTV traffic."
+                action={<Link href="/providers" className={buttonVariants({ size: 'sm' })}>Add provider</Link>}
+              />
+            ) : (
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Provider</TableHead>
+                    <TableHead>Route</TableHead>
+                    <TableHead>Upstream</TableHead>
+                    <TableHead>Status</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {providers.slice(0, 6).map((provider) => (
+                    <TableRow key={provider.id}>
+                      <TableCell>
+                        <div className="flex items-center gap-2 font-medium">
+                          {provider.name}
+                          {provider.is_default === 1 && <Badge variant="secondary">Default</Badge>}
+                        </div>
+                      </TableCell>
+                      <TableCell className="font-mono text-xs">/{provider.route}</TableCell>
+                      <TableCell className="max-w-72 truncate text-muted-foreground">{provider.host}</TableCell>
+                      <TableCell>
+                        <Badge variant={provider.enabled === 1 ? 'success' : 'secondary'}>
+                          {provider.enabled === 1 ? 'Enabled' : 'Disabled'}
+                        </Badge>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            )}
+          </CardContent>
+        </Card>
 
-          {/* Quick Metrics Grid */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-            {/* Metric 1: VPN Tunnel */}
-            <div id="card-vpn-metric" className="border border-neutral-800 bg-neutral-950 p-4 space-y-2">
-              <div className="flex items-center justify-between text-neutral-500 text-[11px] uppercase tracking-wider font-semibold">
-                <span>VPN STATE</span>
-                {vpn?.status === 'connected' ? (
-                  <ShieldCheck className="w-4 h-4 text-emerald-400" />
-                ) : vpn?.status === 'connecting' ? (
-                  <RefreshCw className="w-4 h-4 text-amber-400 animate-spin" />
-                ) : vpn?.status === 'error' ? (
-                  <ShieldAlert className="w-4 h-4 text-rose-400" />
-                ) : (
-                  <Shield className="w-4 h-4 text-neutral-600" />
-                )}
-              </div>
-              <div className="text-base font-bold text-white uppercase tracking-tight">
-                {vpn?.status === 'connected' ? (
-                  <span className="text-emerald-400">{vpn.type} Active</span>
-                ) : vpn?.status === 'connecting' ? (
-                  <span className="text-amber-400">Connecting...</span>
-                ) : vpn?.status === 'error' ? (
-                  <span className="text-rose-400">Tunnel Error</span>
-                ) : (
-                  <span className="text-neutral-400">Off (Direct IP)</span>
-                )}
-              </div>
-              <div className="text-[11px] text-neutral-500 truncate">
-                {vpn?.profileName || 'No profile active'}
-              </div>
-              <div className="pt-2 border-t border-neutral-900 flex justify-between text-[10px] text-neutral-400">
-                <span>IP: {vpn?.publicIp || 'Direct'}</span>
-                <Link href="/vpn" className="text-neutral-300 hover:text-white flex items-center gap-0.5">
-                  Manage <ArrowRight className="w-2.5 h-2.5" />
-                </Link>
-              </div>
-            </div>
-
-            {/* Metric 2: IPTV Providers */}
-            <div id="card-providers-metric" className="border border-neutral-800 bg-neutral-950 p-4 space-y-2">
-              <div className="flex items-center justify-between text-neutral-500 text-[11px] uppercase tracking-wider font-semibold">
-                <span>IPTV PROVIDERS</span>
-                <Tv className="w-4 h-4 text-neutral-400" />
-              </div>
-              <div className="text-base font-bold text-white tracking-tight">
-                {providers.filter((p) => p.enabled === 1).length} / {providers.length}{' '}
-                <span className="text-xs font-normal text-neutral-500">Enabled</span>
-              </div>
-              <div className="text-[11px] text-neutral-500 truncate">
-                Default: {defaultProvider ? `/${defaultProvider.route}` : 'None configured'}
-              </div>
-              <div className="pt-2 border-t border-neutral-900 flex justify-between text-[10px] text-neutral-400">
-                <span>Routes: {providers.length}</span>
-                <Link href="/providers" className="text-neutral-300 hover:text-white flex items-center gap-0.5">
-                  View <ArrowRight className="w-2.5 h-2.5" />
-                </Link>
-              </div>
-            </div>
-
-            {/* Metric 3: Database & Persistence */}
-            <div id="card-db-metric" className="border border-neutral-800 bg-neutral-950 p-4 space-y-2">
-              <div className="flex items-center justify-between text-neutral-500 text-[11px] uppercase tracking-wider font-semibold">
-                <span>DATABASE (SQLITE)</span>
-                <Database className="w-4 h-4 text-neutral-400" />
-              </div>
-              <div className="text-base font-bold text-white tracking-tight">
-                {health?.dbWalMode ? 'WAL Mode' : 'Standard'}
-              </div>
-              <div className="text-[11px] text-neutral-500 truncate">
-                Size: {health?.dbSizeFormatted || 'Ready'}
-              </div>
-              <div className="pt-2 border-t border-neutral-900 flex justify-between text-[10px] text-neutral-400">
-                <span className="truncate max-w-[120px]">{health?.dbPath || '/data'}</span>
-                <span className="text-emerald-400">Online</span>
-              </div>
-            </div>
-
-            {/* Metric 4: System Logs */}
-            <div id="card-logs-metric" className="border border-neutral-800 bg-neutral-950 p-4 space-y-2">
-              <div className="flex items-center justify-between text-neutral-500 text-[11px] uppercase tracking-wider font-semibold">
-                <span>AUDIT LOGS</span>
-                <Activity className="w-4 h-4 text-neutral-400" />
-              </div>
-              <div className="text-base font-bold text-white tracking-tight">
-                {health?.totalLogs ?? 0}{' '}
-                <span className="text-xs font-normal text-neutral-500">Events</span>
-              </div>
-              <div className="text-[11px] text-neutral-500 truncate">
-                SSE Live Streaming: Active
-              </div>
-              <div className="pt-2 border-t border-neutral-900 flex justify-between text-[10px] text-neutral-400">
-                <span>Real-time</span>
-                <Link href="/logs" className="text-neutral-300 hover:text-white flex items-center gap-0.5">
-                  Stream <ArrowRight className="w-2.5 h-2.5" />
-                </Link>
-              </div>
-            </div>
-          </div>
-
-          {/* Core Configuration & Routing Diagnostic */}
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-            {/* Left Col: Configured Providers Table Preview */}
-            <div className="lg:col-span-2 border border-neutral-800 bg-neutral-950 p-4 sm:p-5 space-y-4">
-              <div className="flex items-center justify-between border-b border-neutral-800 pb-3">
+        <Card>
+          <CardHeader>
+            <CardTitle>Runtime</CardTitle>
+            <CardDescription>Core services and host capabilities.</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-3 text-sm">
+            {[
+              ['Go core', system?.go.running === true, system ? `${system.go.latencyMs} ms` : 'Checking'],
+              ['TUN device', health?.tunAvailable === true, health?.tunAvailable ? 'Available' : 'Unavailable'],
+              ['WireGuard', health?.wireguardInstalled === true, health?.wireguardInstalled ? 'Installed' : 'Unavailable'],
+              ['OpenVPN', health?.openvpnInstalled === true, health?.openvpnInstalled ? 'Installed' : 'Unavailable'],
+              ['Cloudflare WARP', health?.warpInstalled === true, health?.warpInstalled ? 'Installed' : 'Unavailable'],
+            ].map(([label, ok, detail]) => (
+              <div key={String(label)} className="flex items-center justify-between gap-3 border-b py-2 last:border-0">
+                <span className="text-muted-foreground">{String(label)}</span>
                 <div className="flex items-center gap-2">
-                  <Tv className="w-4 h-4 text-white" />
-                  <h2 className="text-xs font-bold uppercase tracking-wider text-white">
-                    Upstream Provider Routes
-                  </h2>
+                  <span className="text-xs text-muted-foreground">{String(detail)}</span>
+                  <span className={`size-2 rounded-full ${ok ? 'bg-emerald-500' : 'bg-muted-foreground/40'}`} />
                 </div>
-                <Link
-                  href="/providers"
-                  className="text-xs text-neutral-400 hover:text-white flex items-center gap-1 border border-neutral-800 px-2 py-1 bg-black"
-                >
-                  <span>Configure All</span>
-                  <ExternalLink className="w-3 h-3" />
-                </Link>
               </div>
-
-              {providers.length === 0 ? (
-                <div className="py-8 text-center text-xs text-neutral-500 space-y-3">
-                  <p>No IPTV providers configured yet.</p>
-                  <Link
-                    href="/providers"
-                    className="inline-block px-3 py-1.5 bg-white text-black font-semibold text-xs uppercase"
-                  >
-                    Add First Provider
-                  </Link>
-                </div>
-              ) : (
-                <div className="overflow-x-auto">
-                  <table className="w-full text-left text-xs border border-neutral-800">
-                    <thead className="bg-neutral-900 text-neutral-400 uppercase text-[10px] border-b border-neutral-800">
-                      <tr>
-                        <th className="p-2.5 font-semibold">Name</th>
-                        <th className="p-2.5 font-semibold">Local Route</th>
-                        <th className="p-2.5 font-semibold">Upstream Host</th>
-                        <th className="p-2.5 font-semibold">Status</th>
-                        <th className="p-2.5 font-semibold text-right">Default</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-neutral-900">
-                      {providers.map((p) => (
-                        <tr key={p.id} className="hover:bg-neutral-900/40">
-                          <td className="p-2.5 font-medium text-white">{p.name}</td>
-                          <td className="p-2.5 text-neutral-300">
-                            <span className="bg-black border border-neutral-800 px-1.5 py-0.5 text-[11px]">
-                              /{p.route}
-                            </span>
-                          </td>
-                          <td className="p-2.5 text-neutral-400 truncate max-w-[180px]">{p.host}</td>
-                          <td className="p-2.5">
-                            {p.enabled === 1 ? (
-                              <span className="text-emerald-400 text-[10px] font-semibold uppercase">Enabled</span>
-                            ) : (
-                              <span className="text-neutral-500 text-[10px] font-semibold uppercase">Disabled</span>
-                            )}
-                          </td>
-                          <td className="p-2.5 text-right">
-                            {p.is_default === 1 ? (
-                              <span className="bg-white text-black font-bold text-[9px] px-1.5 py-0.5 uppercase">
-                                DEFAULT
-                              </span>
-                            ) : (
-                              <span className="text-neutral-600 text-[10px]">-</span>
-                            )}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-
-              {/* Xtream Resolution Rules Reference */}
-              <div className="p-3 bg-black border border-neutral-900 text-[11px] text-neutral-400 space-y-1">
-                <div className="font-semibold text-neutral-300 uppercase text-[10px]">
-                  Xtream Routing Architecture:
-                </div>
-                <p>
-                  Requests to <code className="text-neutral-200">/&lt;route&gt;/player_api.php</code> route to that specific provider.
-                </p>
-                <p>
-                  Requests to <code className="text-neutral-200">/player_api.php</code> or <code className="text-neutral-200">/live/...</code> route automatically to the Default Provider.
-                </p>
-              </div>
+            ))}
+            <div className="flex items-center justify-between gap-3 pt-1">
+              <span className="text-muted-foreground">Host uptime</span>
+              <span>{formatUptime(health?.environment.uptimeSeconds)}</span>
             </div>
+          </CardContent>
+        </Card>
+      </div>
 
-            {/* Right Col: Host & Capability Diagnostics */}
-            <div className="border border-neutral-800 bg-neutral-950 p-4 sm:p-5 space-y-4">
-              <div className="flex items-center gap-2 border-b border-neutral-800 pb-3">
-                <Server className="w-4 h-4 text-white" />
-                <h2 className="text-xs font-bold uppercase tracking-wider text-white">
-                  Environment Diagnostics
-                </h2>
-              </div>
-
-              <div className="space-y-2.5 text-xs">
-                <div className="flex items-center justify-between py-1 border-b border-neutral-900">
-                  <span className="text-neutral-400">TUN Device (/dev/net/tun)</span>
-                  {health?.tunAvailable ? (
-                    <span className="text-emerald-400 font-semibold text-[11px]">PRESENT</span>
-                  ) : (
-                    <span className="text-rose-400 font-semibold text-[11px]">NOT DETECTED</span>
-                  )}
-                </div>
-
-                <div className="flex items-center justify-between py-1 border-b border-neutral-900">
-                  <span className="text-neutral-400">WireGuard Tooling</span>
-                  {health?.wireguardInstalled ? (
-                    <span className="text-emerald-400 font-semibold text-[11px]">AVAILABLE</span>
-                  ) : (
-                    <span className="text-neutral-500 font-semibold text-[11px]">NOT INSTALLED</span>
-                  )}
-                </div>
-
-                <div className="flex items-center justify-between py-1 border-b border-neutral-900">
-                  <span className="text-neutral-400">OpenVPN Binary</span>
-                  {health?.openvpnInstalled ? (
-                    <span className="text-emerald-400 font-semibold text-[11px]">AVAILABLE</span>
-                  ) : (
-                    <span className="text-neutral-500 font-semibold text-[11px]">NOT INSTALLED</span>
-                  )}
-                </div>
-
-                <div className="flex items-center justify-between py-1 border-b border-neutral-900">
-                  <span className="text-neutral-400">Cloudflare WARP CLI</span>
-                  {health?.warpInstalled ? (
-                    <span className="text-emerald-400 font-semibold text-[11px]">AVAILABLE</span>
-                  ) : (
-                    <span className="text-neutral-500 font-semibold text-[11px]">NOT INSTALLED</span>
-                  )}
-                </div>
-
-                <div className="flex items-center justify-between py-1 border-b border-neutral-900">
-                  <span className="text-neutral-400">Node.js Runtime</span>
-                  <span className="text-neutral-200">{health?.environment.nodeVersion || process.version}</span>
-                </div>
-
-                <div className="flex items-center justify-between py-1">
-                  <span className="text-neutral-400">Uptime</span>
-                  <span className="text-neutral-200 font-mono">
-                    {health?.environment.uptimeSeconds ? `${Math.floor(health.environment.uptimeSeconds / 60)}m` : '0m'}
-                  </span>
-                </div>
-              </div>
-
-              {/* Docker Note */}
-              <div className="p-3 bg-black border border-neutral-900 text-[10px] text-neutral-500 space-y-1">
-                <span className="text-neutral-400 font-semibold uppercase">Docker Container Note:</span>
-                <p>
-                  In Docker, VPN routing uses container <code className="text-neutral-300">cap_add: NET_ADMIN</code> and device <code className="text-neutral-300">/dev/net/tun</code> while preserving inbound HTTP web port 3000.
-                </p>
-              </div>
-            </div>
+      <Card>
+        <CardHeader className="gap-4 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <CardTitle>Recent warnings</CardTitle>
+            <CardDescription>Latest warning events from the application log.</CardDescription>
           </div>
-
-          {/* Recent Warnings / Errors Feed */}
-          {recentErrors.length > 0 && (
-            <div className="border border-neutral-800 bg-neutral-950 p-4 sm:p-5 space-y-3">
-              <div className="flex items-center justify-between border-b border-neutral-800 pb-3">
-                <div className="flex items-center gap-2 text-rose-400">
-                  <AlertTriangle className="w-4 h-4" />
-                  <h2 className="text-xs font-bold uppercase tracking-wider text-white">
-                    Recent Warnings & Errors
-                  </h2>
-                </div>
-                <Link href="/logs" className="text-xs text-neutral-400 hover:text-white">
-                  Open Full Logs →
-                </Link>
-              </div>
-
-              <div className="space-y-2">
-                {recentErrors.map((log) => (
-                  <div
-                    key={log.id}
-                    className="p-2.5 bg-black border border-neutral-900 text-xs flex flex-col sm:flex-row sm:items-center justify-between gap-2"
-                  >
-                    <div className="flex items-center gap-2 overflow-hidden">
-                      <span
-                        className={`text-[9px] font-bold px-1.5 py-0.5 uppercase shrink-0 ${
-                          log.level === 'error'
-                            ? 'bg-rose-950 text-rose-300 border border-rose-800'
-                            : 'bg-amber-950 text-amber-300 border border-amber-800'
-                        }`}
-                      >
-                        {log.level}
-                      </span>
-                      <span className="text-neutral-500 text-[10px] shrink-0 uppercase">[{log.source}]</span>
-                      <span className="text-neutral-300 truncate text-[11px]">{log.message}</span>
+          <Link href="/logs" className={buttonVariants({ variant: 'ghost', size: 'sm' })}>View logs</Link>
+        </CardHeader>
+        <CardContent>
+          {recentWarnings.length === 0 ? (
+            <div className="flex items-center gap-2 rounded-lg bg-muted/50 p-4 text-sm text-muted-foreground">
+              <Activity className="size-4" />
+              No recent warnings.
+            </div>
+          ) : (
+            <div className="divide-y rounded-lg border">
+              {recentWarnings.map((item) => (
+                <div key={item.id} className="flex items-start gap-3 p-3">
+                  <TriangleAlert className="mt-0.5 size-4 shrink-0 text-amber-500" />
+                  <div className="min-w-0 flex-1">
+                    <div className="truncate text-sm font-medium">{item.message}</div>
+                    <div className="mt-1 text-xs text-muted-foreground">
+                      {item.source} · {new Date(item.timestamp).toLocaleString()}
                     </div>
-                    <span className="text-[10px] text-neutral-600 shrink-0 font-mono">
-                      {new Date(log.timestamp).toLocaleTimeString()}
-                    </span>
                   </div>
-                ))}
-              </div>
+                </div>
+              ))}
             </div>
           )}
-        </main>
-      </div>
-    </div>
+        </CardContent>
+      </Card>
+    </AppShell>
   );
 }

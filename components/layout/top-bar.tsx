@@ -1,8 +1,12 @@
 'use client';
 
-import React, { useCallback, useEffect, useState } from 'react';
-import { CircleCheck, CircleX, Globe2, MapPin, Menu, Moon, RefreshCw, Server, Shield, ShieldAlert, ShieldCheck, Sun } from 'lucide-react';
+import * as React from 'react';
 import Link from 'next/link';
+import { Activity, Globe2, Menu, Moon, RefreshCw, Shield, Sun } from 'lucide-react';
+import { Badge } from '@/components/ui/badge';
+import { Button, buttonVariants } from '@/components/ui/button';
+import { apiPath, readJson } from '@/lib/client/api';
+import { cn } from '@/lib/utils';
 
 interface TopBarProps {
   onToggleMobile?: () => void;
@@ -12,20 +16,12 @@ interface VpnStatusData {
   status: 'off' | 'connecting' | 'connected' | 'error';
   type: 'off' | 'wireguard' | 'openvpn' | 'warp';
   profileName: string | null;
-  lastError: string | null;
-  isBusy: boolean;
 }
 
 interface NetworkStatusData {
   ip: string | null;
-  country: string | null;
-  region: string | null;
-  city: string | null;
   location: string | null;
-  server: string;
-  vpnStatus: 'off' | 'connecting' | 'connected' | 'error';
-  vpnType: 'off' | 'wireguard' | 'openvpn' | 'warp';
-  checkedAt: string;
+  country: string | null;
 }
 
 interface SystemStatusData {
@@ -33,187 +29,138 @@ interface SystemStatusData {
     running: boolean;
     status: 'running' | 'unhealthy' | 'offline';
     latencyMs: number;
+    activeStreams?: number;
+    viewers?: number;
   };
 }
 
 type Theme = 'dark' | 'light';
 
-export function TopBar({ onToggleMobile }: TopBarProps) {
-  const [vpn, setVpn] = useState<VpnStatusData | null>(null);
-  const [network, setNetwork] = useState<NetworkStatusData | null>(null);
-  const [system, setSystem] = useState<SystemStatusData | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [theme, setTheme] = useState<Theme>('dark');
+type ApiEnvelope<T> = {
+  success?: boolean;
+  data?: T;
+};
 
-  useEffect(() => {
+function applyTheme(theme: Theme) {
+  document.documentElement.classList.toggle('dark', theme === 'dark');
+  document.documentElement.dataset.theme = theme;
+}
+
+export function TopBar({ onToggleMobile }: TopBarProps) {
+  const [vpn, setVpn] = React.useState<VpnStatusData | null>(null);
+  const [network, setNetwork] = React.useState<NetworkStatusData | null>(null);
+  const [system, setSystem] = React.useState<SystemStatusData | null>(null);
+  const [refreshing, setRefreshing] = React.useState(false);
+  const [theme, setTheme] = React.useState<Theme>('dark');
+
+  React.useEffect(() => {
     const stored = window.localStorage.getItem('iptv-proxy-theme');
     const initial: Theme = stored === 'light' || stored === 'dark'
       ? stored
       : window.matchMedia('(prefers-color-scheme: light)').matches
         ? 'light'
         : 'dark';
-    document.documentElement.dataset.theme = initial;
+    applyTheme(initial);
     setTheme(initial);
   }, []);
 
   const toggleTheme = () => {
     const next: Theme = theme === 'dark' ? 'light' : 'dark';
-    document.documentElement.dataset.theme = next;
+    applyTheme(next);
     window.localStorage.setItem('iptv-proxy-theme', next);
     setTheme(next);
   };
 
-  const refreshStatus = useCallback(async (forceNetwork = false) => {
+  const refreshStatus = React.useCallback(async (forceNetwork = false) => {
+    setRefreshing(true);
     try {
-      setLoading(true);
-      const [vpnRes, networkRes, systemRes] = await Promise.all([
-        fetch('/api/vpn/status', { cache: 'no-store' }),
-        fetch(`/api/network/status${forceNetwork ? '?refresh=true' : ''}`, { cache: 'no-store' }),
-        fetch('/api/system/status', { cache: 'no-store' }),
+      const [vpnResponse, networkResponse, systemResponse] = await Promise.all([
+        fetch(apiPath('/api/vpn/status'), { cache: 'no-store' }),
+        fetch(apiPath(`/api/network/status${forceNetwork ? '?refresh=true' : ''}`), { cache: 'no-store' }),
+        fetch(apiPath('/api/system/status'), { cache: 'no-store' }),
       ]);
 
-      if (vpnRes.ok) {
-        const json = await vpnRes.json();
-        if (json.success) setVpn(json.data);
+      if (vpnResponse.ok) {
+        const payload = await readJson<ApiEnvelope<VpnStatusData>>(vpnResponse);
+        if (payload.success && payload.data) setVpn(payload.data);
       }
-
-      if (networkRes.ok) {
-        const json = await networkRes.json();
-        if (json.success) setNetwork(json.data);
+      if (networkResponse.ok) {
+        const payload = await readJson<ApiEnvelope<NetworkStatusData>>(networkResponse);
+        if (payload.success && payload.data) setNetwork(payload.data);
       }
-
-      if (systemRes.ok) {
-        const json = await systemRes.json();
-        if (json.success) setSystem(json.data);
+      if (systemResponse.ok) {
+        const payload = await readJson<ApiEnvelope<SystemStatusData>>(systemResponse);
+        if (payload.success && payload.data) setSystem(payload.data);
       }
-    } catch {
     } finally {
-      setLoading(false);
+      setRefreshing(false);
     }
   }, []);
 
-  useEffect(() => {
-    void refreshStatus(false);
-    const interval = setInterval(() => void refreshStatus(false), 10_000);
-    return () => clearInterval(interval);
+  React.useEffect(() => {
+    void refreshStatus();
+    const interval = window.setInterval(() => void refreshStatus(), 10_000);
+    return () => window.clearInterval(interval);
   }, [refreshStatus]);
 
-  const status = vpn?.status || network?.vpnStatus || 'off';
-  const location = network?.location || network?.country || 'LOCATION UNKNOWN';
-  const outboundIp = network?.ip || 'IP UNAVAILABLE';
-  const serverLabel = network?.server || (status === 'off' ? 'DIRECT / HOST NETWORK' : vpn?.profileName || 'UNKNOWN');
   const goRunning = system?.go.running === true;
+  const vpnStatus = vpn?.status || 'off';
+  const location = network?.location || network?.country || 'Unknown location';
+  const outboundIp = network?.ip || 'IP unavailable';
+  const liveViewers = system?.go.viewers || 0;
+  const vpnLabel = vpn?.profileName || vpn?.type || 'VPN';
 
   return (
-    <header id="app-topbar" className="min-h-16 border-b border-neutral-800 bg-neutral-950 px-4 py-2 font-mono text-neutral-200 select-none sm:px-6">
-      <div className="flex min-h-12 items-center justify-between gap-3">
-        <div className="flex min-w-0 items-center gap-3">
-          <button
-            id="btn-mobile-menu"
-            onClick={onToggleMobile}
-            className="border border-neutral-800 bg-black p-2 text-neutral-400 hover:text-white md:hidden"
-            aria-label="Toggle navigation menu"
-          >
-            <Menu className="h-4 w-4" />
-          </button>
+    <header id="app-topbar" className="sticky top-0 z-40 border-b bg-background/90 backdrop-blur supports-[backdrop-filter]:bg-background/75">
+      <div className="flex h-16 items-center gap-3 px-4 sm:px-6">
+        <Button id="btn-mobile-menu" variant="ghost" size="icon" className="md:hidden" onClick={onToggleMobile} aria-label="Open navigation">
+          <Menu className="size-4" />
+        </Button>
 
-          <div className="hidden items-center gap-2 text-xs sm:flex">
-            <span className="text-neutral-500">ENVIRONMENT:</span>
-            <span className="border border-neutral-800 bg-neutral-900 px-2 py-0.5 text-[11px] uppercase tracking-wider text-neutral-300">DOCKER</span>
-          </div>
+        <div className="hidden min-w-0 items-center gap-2 text-sm text-muted-foreground sm:flex">
+          <Globe2 className="size-4" />
+          <span className="truncate font-mono text-xs text-foreground">{outboundIp}</span>
+          <span className="hidden truncate text-xs lg:inline">· {location}</span>
         </div>
 
-        <div className="flex min-w-0 flex-1 items-center justify-end gap-2 overflow-x-auto text-xs">
-          <div
-            id="topbar-go-status"
-            className="flex shrink-0 items-center gap-1.5 border border-neutral-800 bg-black px-2.5 py-1.5"
-            title={system ? `Go core: ${system.go.status} (${system.go.latencyMs} ms)` : 'Go core status pending'}
-          >
-            {goRunning ? <CircleCheck className="h-3.5 w-3.5 text-emerald-400" /> : <CircleX className="h-3.5 w-3.5 text-rose-400" />}
-            <span className={`text-[10px] font-semibold uppercase ${goRunning ? 'text-emerald-400' : 'text-rose-400'}`}>GO {goRunning ? 'RUNNING' : 'OFFLINE'}</span>
-          </div>
+        <div className="ml-auto flex items-center gap-2">
+          {liveViewers > 0 && (
+            <Badge variant="secondary" className="hidden gap-1.5 sm:inline-flex">
+              <Activity className="size-3" />
+              {liveViewers} viewer{liveViewers === 1 ? '' : 's'}
+            </Badge>
+          )}
 
-          <div
-            id="topbar-egress-status"
-            className="hidden min-w-0 items-center gap-3 border border-neutral-800 bg-black px-3 py-1.5 lg:flex"
-            title={`Current outbound IP: ${outboundIp}\nServer: ${serverLabel}\nLocation: ${location}`}
-          >
-            <div className="flex min-w-0 items-center gap-1.5">
-              <Globe2 className="h-3.5 w-3.5 shrink-0 text-neutral-400" />
-              <span className="text-[10px] uppercase text-neutral-500">OUT:</span>
-              <span className="truncate text-[11px] font-semibold text-white">{outboundIp}</span>
-            </div>
-            <div className="h-4 w-px shrink-0 bg-neutral-800" />
-            <div className="flex min-w-0 items-center gap-1.5">
-              <Server className="h-3.5 w-3.5 shrink-0 text-neutral-400" />
-              <span className="max-w-48 truncate text-[10px] text-neutral-300">{serverLabel}</span>
-            </div>
-            <div className="h-4 w-px shrink-0 bg-neutral-800" />
-            <div className="flex min-w-0 items-center gap-1.5">
-              <MapPin className="h-3.5 w-3.5 shrink-0 text-neutral-400" />
-              <span className="max-w-48 truncate text-[10px] text-neutral-300">{location}</span>
-            </div>
-          </div>
+          <Badge id="topbar-go-status" variant={goRunning ? 'success' : 'destructive'} className="gap-1.5">
+            <span className={cn('size-1.5 rounded-full', goRunning ? 'bg-emerald-500' : 'bg-destructive')} />
+            Go {goRunning ? 'online' : 'offline'}
+          </Badge>
 
           <Link
-            href="/vpn"
             id="topbar-vpn-indicator"
-            title={`Outbound IP: ${outboundIp} | Server: ${serverLabel} | Location: ${location}`}
-            className="flex shrink-0 items-center gap-2 border border-neutral-800 bg-black px-3 py-1.5 transition-colors hover:border-neutral-600"
+            href="/vpn"
+            className={buttonVariants({ variant: 'outline', size: 'sm', className: 'gap-2' })}
           >
-            {status === 'connected' ? (
-              <>
-                <ShieldCheck className="h-4 w-4 shrink-0 text-emerald-400" />
-                <span className="text-[11px] font-semibold uppercase text-emerald-400">VPN ACTIVE</span>
-              </>
-            ) : status === 'connecting' ? (
-              <>
-                <RefreshCw className="h-4 w-4 shrink-0 animate-spin text-amber-400" />
-                <span className="text-[11px] font-semibold uppercase text-amber-400">CONNECTING</span>
-              </>
-            ) : status === 'error' ? (
-              <>
-                <ShieldAlert className="h-4 w-4 shrink-0 text-rose-400" />
-                <span className="text-[11px] font-semibold uppercase text-rose-400">VPN ERROR</span>
-              </>
-            ) : (
-              <>
-                <Shield className="h-4 w-4 shrink-0 text-neutral-500" />
-                <span className="text-[11px] uppercase text-neutral-400">DIRECT</span>
-              </>
-            )}
-            <span className="hidden max-w-32 truncate text-[10px] text-neutral-500 md:inline">{outboundIp}</span>
+            <Shield className="size-4" />
+            <span className="hidden sm:inline">
+              {vpnStatus === 'connected'
+                ? vpnLabel
+                : vpnStatus === 'connecting'
+                  ? 'Connecting'
+                  : vpnStatus === 'error'
+                    ? 'VPN error'
+                    : 'Direct'}
+            </span>
           </Link>
 
-          <button
-            id="btn-theme-toggle"
-            onClick={toggleTheme}
-            title={`Switch to ${theme === 'dark' ? 'light' : 'dark'} mode`}
-            aria-label={`Switch to ${theme === 'dark' ? 'light' : 'dark'} mode`}
-            className="shrink-0 border border-neutral-800 bg-black p-1.5 text-neutral-400 transition-colors hover:bg-neutral-900 hover:text-white"
-          >
-            {theme === 'dark' ? <Sun className="h-3.5 w-3.5" /> : <Moon className="h-3.5 w-3.5" />}
-          </button>
+          <Button id="btn-theme-toggle" variant="ghost" size="icon" onClick={toggleTheme} aria-label={`Switch to ${theme === 'dark' ? 'light' : 'dark'} mode`}>
+            {theme === 'dark' ? <Sun className="size-4" /> : <Moon className="size-4" />}
+          </Button>
 
-          <button
-            id="btn-refresh-topbar"
-            onClick={() => void refreshStatus(true)}
-            disabled={loading}
-            title="Refresh runtime, outgoing IP, server, location, and VPN status"
-            className="shrink-0 border border-neutral-800 bg-black p-1.5 text-neutral-400 transition-colors hover:bg-neutral-900 hover:text-white disabled:opacity-50"
-          >
-            <RefreshCw className={`h-3.5 w-3.5 ${loading ? 'animate-spin' : ''}`} />
-          </button>
+          <Button id="btn-refresh-topbar" variant="ghost" size="icon" onClick={() => void refreshStatus(true)} disabled={refreshing} aria-label="Refresh runtime status">
+            <RefreshCw className={cn('size-4', refreshing && 'animate-spin')} />
+          </Button>
         </div>
-      </div>
-
-      <div className="flex items-center gap-2 overflow-x-auto border-t border-neutral-900 pt-1.5 text-[10px] lg:hidden">
-        <span className="flex shrink-0 items-center gap-1 text-neutral-500"><Globe2 className="h-3 w-3" /> OUT</span>
-        <span className="shrink-0 font-semibold text-white">{outboundIp}</span>
-        <span className="text-neutral-700">|</span>
-        <span className="max-w-40 shrink-0 truncate text-neutral-400">{serverLabel}</span>
-        <span className="text-neutral-700">|</span>
-        <span className="max-w-40 shrink-0 truncate text-neutral-400">{location}</span>
       </div>
     </header>
   );

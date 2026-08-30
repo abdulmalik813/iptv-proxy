@@ -1,9 +1,7 @@
 'use client';
 
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { useRouter } from 'next/navigation';
+import * as React from 'react';
 import {
-  AlertTriangle,
   ChevronLeft,
   ChevronRight,
   Gauge,
@@ -16,12 +14,30 @@ import {
   Shield,
   Square,
   Trash2,
-  X,
 } from 'lucide-react';
-import { Sidebar } from '@/components/layout/sidebar';
-import { TopBar } from '@/components/layout/top-bar';
+import { AppShell } from '@/components/layout/app-shell';
+import { PageHeader } from '@/components/layout/page-header';
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
+import { EmptyState } from '@/components/ui/empty-state';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { Textarea } from '@/components/ui/textarea';
+import { apiPath, readJson } from '@/lib/client/api';
 
 type VpnTab = 'overview' | 'wireguard' | 'openvpn' | 'vpngate' | 'warp';
+
 type VpnSummary = {
   status: 'off' | 'connecting' | 'connected' | 'error';
   type: 'off' | 'wireguard' | 'openvpn' | 'warp';
@@ -33,11 +49,54 @@ type VpnSummary = {
   lastError: string | null;
   isBusy: boolean;
 };
-type WireguardProfile = { id: string; name: string; address: string | null; endpoint: string | null; enabled: number };
-type OpenvpnProfile = { id: string; name: string; remotes: string[]; proto: string | null; source: 'uploaded' | 'vpngate'; enabled: number };
-type VpnGateServer = { id: string; ip: string; hostname: string; countryLong: string; countryShort: string; ping: number; speed: number; score: number; sessions: number; uptime: number };
-type WarpStatus = { installed: boolean; daemonRunning: boolean; registered: boolean; connected: boolean; mode?: string; accountType?: string; deviceId?: string; details: string };
-type SpeedResult = { downloadMbps: number; uploadMbps: number; testedAt: string };
+
+type WireguardProfile = {
+  id: string;
+  name: string;
+  address: string | null;
+  endpoint: string | null;
+  enabled: number;
+};
+
+type OpenvpnProfile = {
+  id: string;
+  name: string;
+  remotes: string[];
+  proto: string | null;
+  source: 'uploaded' | 'vpngate';
+  enabled: number;
+};
+
+type VpnGateServer = {
+  id: string;
+  ip: string;
+  hostname: string;
+  countryLong: string;
+  countryShort: string;
+  ping: number;
+  speed: number;
+  score: number;
+  sessions: number;
+  uptime: number;
+};
+
+type WarpStatus = {
+  installed: boolean;
+  daemonRunning: boolean;
+  registered: boolean;
+  connected: boolean;
+  mode?: string;
+  accountType?: string;
+  deviceId?: string;
+  details: string;
+};
+
+type SpeedResult = {
+  downloadMbps: number;
+  uploadMbps: number;
+  testedAt: string;
+};
+
 type ProfileEditor = {
   kind: 'wireguard' | 'openvpn';
   id: string | null;
@@ -49,148 +108,187 @@ type ProfileEditor = {
   source?: 'uploaded' | 'vpngate';
 };
 
-const UI_BASE = process.env.NEXT_PUBLIC_UI_BASE_PATH || '/ui';
-const apiPath = (path: string) => `${UI_BASE}${path}`;
+type DeleteTarget = {
+  kind: 'wireguard' | 'openvpn';
+  id: string;
+  name: string;
+};
+
+type Envelope<T = unknown> = {
+  success?: boolean;
+  data?: T;
+  error?: string;
+};
+
 const PAGE_SIZE = 10;
 
-async function readJson(res: Response) {
-  try { return await res.json(); } catch { return { success: false, error: `HTTP ${res.status}` }; }
+function DetailRows({ rows }: { rows: Array<[string, React.ReactNode]> }) {
+  return (
+    <div className="divide-y rounded-lg border">
+      {rows.map(([label, value]) => (
+        <div key={label} className="flex items-start justify-between gap-6 px-4 py-3 text-sm">
+          <span className="text-muted-foreground">{label}</span>
+          <span className="max-w-[65%] break-words text-right font-medium">{value}</span>
+        </div>
+      ))}
+    </div>
+  );
 }
 
 export default function VpnPage() {
-  const router = useRouter();
-  const [mobileOpen, setMobileOpen] = useState(false);
-  const [user, setUser] = useState<{ username: string } | null>(null);
-  const [tab, setTab] = useState<VpnTab>('overview');
-  const [summary, setSummary] = useState<VpnSummary | null>(null);
-  const [wg, setWg] = useState<WireguardProfile[]>([]);
-  const [ovpn, setOvpn] = useState<OpenvpnProfile[]>([]);
-  const [gate, setGate] = useState<VpnGateServer[]>([]);
-  const [warp, setWarp] = useState<WarpStatus | null>(null);
-  const [busy, setBusy] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [search, setSearch] = useState('');
-  const [gatePage, setGatePage] = useState(1);
-  const [gateRefreshing, setGateRefreshing] = useState(false);
-  const [editor, setEditor] = useState<ProfileEditor | null>(null);
-  const [editorSaving, setEditorSaving] = useState(false);
-  const [editorError, setEditorError] = useState<string | null>(null);
-  const [speed, setSpeed] = useState<SpeedResult | null>(null);
-  const [speedBusy, setSpeedBusy] = useState(false);
+  const [tab, setTab] = React.useState<VpnTab>('overview');
+  const [summary, setSummary] = React.useState<VpnSummary | null>(null);
+  const [wireguardProfiles, setWireguardProfiles] = React.useState<WireguardProfile[]>([]);
+  const [openvpnProfiles, setOpenvpnProfiles] = React.useState<OpenvpnProfile[]>([]);
+  const [gateServers, setGateServers] = React.useState<VpnGateServer[]>([]);
+  const [warp, setWarp] = React.useState<WarpStatus | null>(null);
+  const [busy, setBusy] = React.useState<string | null>(null);
+  const [error, setError] = React.useState<string | null>(null);
+  const [search, setSearch] = React.useState('');
+  const [gatePage, setGatePage] = React.useState(1);
+  const [gateRefreshing, setGateRefreshing] = React.useState(false);
+  const [editor, setEditor] = React.useState<ProfileEditor | null>(null);
+  const [editorSaving, setEditorSaving] = React.useState(false);
+  const [editorError, setEditorError] = React.useState<string | null>(null);
+  const [deleteTarget, setDeleteTarget] = React.useState<DeleteTarget | null>(null);
+  const [speed, setSpeed] = React.useState<SpeedResult | null>(null);
+  const [speedBusy, setSpeedBusy] = React.useState(false);
 
-  const loadStatus = useCallback(async () => {
-    const r = await fetch(apiPath('/api/vpn/status'), { cache: 'no-store' });
-    if (r.status === 401) { router.replace('/login'); return; }
-    const b = await readJson(r);
-    if (r.ok && b.success) setSummary(b.data);
-  }, [router]);
-
-  const loadWg = useCallback(async () => {
-    const r = await fetch(apiPath('/api/vpn/wireguard'), { cache: 'no-store' });
-    const b = await readJson(r);
-    if (r.ok && b.success) setWg(b.data);
+  const loadStatus = React.useCallback(async () => {
+    const response = await fetch(apiPath('/api/vpn/status'), { cache: 'no-store' });
+    const payload = await readJson<Envelope<VpnSummary>>(response);
+    if (response.ok && payload.success && payload.data) setSummary(payload.data);
   }, []);
 
-  const loadOvpn = useCallback(async () => {
-    const r = await fetch(apiPath('/api/vpn/openvpn'), { cache: 'no-store' });
-    const b = await readJson(r);
-    if (r.ok && b.success) setOvpn(b.data);
+  const loadWireguard = React.useCallback(async () => {
+    const response = await fetch(apiPath('/api/vpn/wireguard'), { cache: 'no-store' });
+    const payload = await readJson<Envelope<WireguardProfile[]>>(response);
+    if (response.ok && payload.success && payload.data) setWireguardProfiles(payload.data);
   }, []);
 
-  const loadWarp = useCallback(async () => {
-    const r = await fetch(apiPath('/api/vpn/warp'), { cache: 'no-store' });
-    const b = await readJson(r);
-    if (r.ok && b.success) setWarp(b.data);
+  const loadOpenvpn = React.useCallback(async () => {
+    const response = await fetch(apiPath('/api/vpn/openvpn'), { cache: 'no-store' });
+    const payload = await readJson<Envelope<OpenvpnProfile[]>>(response);
+    if (response.ok && payload.success && payload.data) setOpenvpnProfiles(payload.data);
   }, []);
 
-  const loadGate = useCallback(async (refresh = false) => {
+  const loadWarp = React.useCallback(async () => {
+    const response = await fetch(apiPath('/api/vpn/warp'), { cache: 'no-store' });
+    const payload = await readJson<Envelope<WarpStatus>>(response);
+    if (response.ok && payload.success && payload.data) setWarp(payload.data);
+  }, []);
+
+  const loadGate = React.useCallback(async (refresh = false) => {
     if (refresh) setGateRefreshing(true);
     try {
-      const r = await fetch(apiPath(`/api/vpn/vpngate?refresh=${refresh}`), { cache: 'no-store' });
-      const b = await readJson(r);
-      if (!r.ok || !b.success) throw new Error(b.error || 'Failed to load VPNGate');
-      setGate(b.data);
+      const response = await fetch(apiPath(`/api/vpn/vpngate?refresh=${refresh}`), { cache: 'no-store' });
+      const payload = await readJson<Envelope<VpnGateServer[]>>(response);
+      if (!response.ok || !payload.success || !payload.data) {
+        throw new Error(payload.error || 'Unable to load VPNGate servers.');
+      }
+      setGateServers(payload.data);
       setGatePage(1);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
     } finally {
       if (refresh) setGateRefreshing(false);
     }
   }, []);
 
-  useEffect(() => {
-    void (async () => {
-      const a = await fetch(apiPath('/api/auth/me'), { cache: 'no-store' });
-      const b = await readJson(a);
-      if (a.status === 401) { router.replace('/login'); return; }
-      if (b.user) setUser(b.user);
-      await loadStatus();
-    })();
-    const timer = setInterval(() => void loadStatus(), 4000);
-    return () => clearInterval(timer);
-  }, [loadStatus, router]);
+  React.useEffect(() => {
+    void loadStatus();
+    const timer = window.setInterval(() => void loadStatus(), 4_000);
+    return () => window.clearInterval(timer);
+  }, [loadStatus]);
 
-  useEffect(() => {
-    if (tab === 'wireguard') void loadWg();
-    if (tab === 'openvpn') void loadOvpn();
-    if (tab === 'vpngate') void loadGate(false);
+  React.useEffect(() => {
+    if (tab === 'wireguard') void loadWireguard();
+    if (tab === 'openvpn') void loadOpenvpn();
+    if (tab === 'vpngate') void loadGate();
     if (tab === 'warp') void loadWarp();
-  }, [tab, loadWg, loadOvpn, loadGate, loadWarp]);
+  }, [tab, loadGate, loadOpenvpn, loadWarp, loadWireguard]);
 
-  useEffect(() => { setGatePage(1); }, [search]);
+  React.useEffect(() => setGatePage(1), [search]);
 
-  const action = useCallback(async (label: string, fn: () => Promise<Response>, after?: () => Promise<void>) => {
+  const action = React.useCallback(async (
+    label: string,
+    request: () => Promise<Response>,
+    after?: () => Promise<void>,
+  ) => {
     setBusy(label);
     setError(null);
     try {
-      const r = await fn();
-      const b = await readJson(r);
-      if (!r.ok || !b.success) throw new Error(b.error || `${label} failed`);
+      const response = await request();
+      const payload = await readJson<Envelope>(response);
+      if (!response.ok || !payload.success) throw new Error(payload.error || `${label} failed.`);
       if (after) await after();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
     } finally {
       await loadStatus().catch(() => undefined);
       setBusy(null);
     }
   }, [loadStatus]);
 
-  const operationBusy = Boolean(busy) || Boolean(summary?.isBusy) || summary?.status === 'connecting';
   const active = summary?.status === 'connected';
-  const canConnect = !operationBusy && !active && (summary?.status === 'off' || summary?.status === 'error' || !summary);
+  const operationBusy = Boolean(busy) || Boolean(summary?.isBusy) || summary?.status === 'connecting';
+  const canConnect = !operationBusy && !active;
   const canDisconnect = !operationBusy && Boolean(active);
-  const currentLabel = summary?.profileName || summary?.type || 'None';
+  const currentLabel = summary?.profileName || (summary?.type && summary.type !== 'off' ? summary.type : 'None');
 
   const connect = (type: 'wireguard' | 'openvpn', profileId: string) => action(
     `Connecting ${type}`,
-    () => fetch(apiPath('/api/vpn/connect'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ type, profileId }) })
+    () => fetch(apiPath('/api/vpn/connect'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type, profileId }),
+    }),
   );
-  const disconnect = () => action('Disconnecting VPN', () => fetch(apiPath('/api/vpn/disconnect'), { method: 'POST' }));
-  const gateConnect = (s: VpnGateServer) => action(
-    `Connecting VPNGate ${s.countryShort}`,
-    () => fetch(apiPath('/api/vpn/vpngate'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'connect', serverId: s.id }) })
+
+  const disconnect = () => action(
+    'Disconnecting VPN',
+    () => fetch(apiPath('/api/vpn/disconnect'), { method: 'POST' }),
   );
-  const gateSave = (s: VpnGateServer) => action(
+
+  const connectGate = (server: VpnGateServer) => action(
+    `Connecting VPNGate ${server.countryShort}`,
+    () => fetch(apiPath('/api/vpn/vpngate'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'connect', serverId: server.id }),
+    }),
+  );
+
+  const saveGate = (server: VpnGateServer) => action(
     'Saving VPNGate profile',
-    () => fetch(apiPath('/api/vpn/vpngate'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'save', serverId: s.id }) }),
-    loadOvpn
+    () => fetch(apiPath('/api/vpn/vpngate'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'save', serverId: server.id }),
+    }),
+    loadOpenvpn,
   );
-  const warpAction = (a: 'register' | 'connect' | 'disconnect' | 'rotate') => action(
-    `WARP ${a}`,
-    () => fetch(apiPath('/api/vpn/warp'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: a }) }),
-    loadWarp
+
+  const warpAction = (operation: 'register' | 'connect' | 'disconnect' | 'rotate') => action(
+    `WARP ${operation}`,
+    () => fetch(apiPath('/api/vpn/warp'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: operation }),
+    }),
+    loadWarp,
   );
 
   const runSpeedTest = async () => {
     setSpeedBusy(true);
     setError(null);
     try {
-      const r = await fetch(apiPath('/api/vpn/speedtest'), { method: 'POST' });
-      const b = await readJson(r);
-      if (!r.ok || !b.success) throw new Error(b.error || 'Speed test failed');
-      setSpeed(b.data);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      const response = await fetch(apiPath('/api/vpn/speedtest'), { method: 'POST' });
+      const payload = await readJson<Envelope<SpeedResult>>(response);
+      if (!response.ok || !payload.success || !payload.data) throw new Error(payload.error || 'Speed test failed.');
+      setSpeed(payload.data);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
     } finally {
       setSpeedBusy(false);
     }
@@ -203,7 +301,16 @@ export default function VpnPage() {
 
   const openCreate = (kind: 'wireguard' | 'openvpn') => {
     setEditorError(null);
-    setEditor({ kind, id: null, name: '', config: '', username: '', password: '', enabled: true, source: kind === 'openvpn' ? 'uploaded' : undefined });
+    setEditor({
+      kind,
+      id: null,
+      name: '',
+      config: '',
+      username: '',
+      password: '',
+      enabled: true,
+      source: kind === 'openvpn' ? 'uploaded' : undefined,
+    });
   };
 
   const openEdit = async (kind: 'wireguard' | 'openvpn', id: string) => {
@@ -211,21 +318,21 @@ export default function VpnPage() {
     setError(null);
     setEditorError(null);
     try {
-      const r = await fetch(apiPath(`/api/vpn/${kind}/${id}`), { cache: 'no-store' });
-      const b = await readJson(r);
-      if (!r.ok || !b.success) throw new Error(b.error || 'Unable to load profile');
+      const response = await fetch(apiPath(`/api/vpn/${kind}/${id}`), { cache: 'no-store' });
+      const payload = await readJson<Envelope<ProfileEditor>>(response);
+      if (!response.ok || !payload.success || !payload.data) throw new Error(payload.error || 'Unable to load profile.');
       setEditor({
         kind,
         id,
-        name: b.data.name || '',
-        config: b.data.config || '',
-        username: b.data.username || '',
-        password: b.data.password || '',
-        enabled: Boolean(b.data.enabled),
-        source: b.data.source,
+        name: payload.data.name || '',
+        config: payload.data.config || '',
+        username: payload.data.username || '',
+        password: payload.data.password || '',
+        enabled: Boolean(payload.data.enabled),
+        source: payload.data.source,
       });
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
     } finally {
       setBusy(null);
     }
@@ -240,134 +347,381 @@ export default function VpnPage() {
       const endpoint = isEdit ? `/api/vpn/${editor.kind}/${editor.id}` : `/api/vpn/${editor.kind}`;
       const payload = editor.kind === 'wireguard'
         ? { name: editor.name, config: editor.config, ...(isEdit ? { enabled: editor.enabled } : {}) }
-        : { name: editor.name, config: editor.config, username: editor.username || null, password: editor.password || null, ...(isEdit ? { enabled: editor.enabled } : { source: 'uploaded' }) };
-      const r = await fetch(apiPath(endpoint), { method: isEdit ? 'PUT' : 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
-      const b = await readJson(r);
-      if (!r.ok || !b.success) throw new Error(b.error || 'Failed to save profile');
+        : {
+            name: editor.name,
+            config: editor.config,
+            username: editor.username || null,
+            password: editor.password || null,
+            ...(isEdit ? { enabled: editor.enabled } : { source: 'uploaded' }),
+          };
+      const response = await fetch(apiPath(endpoint), {
+        method: isEdit ? 'PUT' : 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const result = await readJson<Envelope>(response);
+      if (!response.ok || !result.success) throw new Error(result.error || 'Failed to save profile.');
+      const kind = editor.kind;
       closeEditor();
-      if (editor.kind === 'wireguard') await loadWg(); else await loadOvpn();
-    } catch (e) {
-      setEditorError(e instanceof Error ? e.message : String(e));
+      if (kind === 'wireguard') await loadWireguard();
+      else await loadOpenvpn();
+    } catch (err) {
+      setEditorError(err instanceof Error ? err.message : String(err));
     } finally {
       setEditorSaving(false);
     }
   };
 
-  const deleteProfile = async (kind: 'wireguard' | 'openvpn', id: string, name: string) => {
-    if (!window.confirm(`Delete ${name}?`)) return;
+  const deleteProfile = async () => {
+    if (!deleteTarget) return;
+    const target = deleteTarget;
+    setDeleteTarget(null);
     await action(
-      `Deleting ${kind} profile`,
-      () => fetch(apiPath(`/api/vpn/${kind}/${id}`), { method: 'DELETE' }),
-      kind === 'wireguard' ? loadWg : loadOvpn
+      `Deleting ${target.kind} profile`,
+      () => fetch(apiPath(`/api/vpn/${target.kind}/${target.id}`), { method: 'DELETE' }),
+      target.kind === 'wireguard' ? loadWireguard : loadOpenvpn,
     );
   };
 
-  const filteredGate = useMemo(() => gate.filter((s) => !search || `${s.countryLong} ${s.countryShort} ${s.ip} ${s.hostname}`.toLowerCase().includes(search.toLowerCase())), [gate, search]);
+  const filteredGate = React.useMemo(
+    () => gateServers.filter((server) => !search || `${server.countryLong} ${server.countryShort} ${server.ip} ${server.hostname}`.toLowerCase().includes(search.toLowerCase())),
+    [gateServers, search],
+  );
   const gatePages = Math.max(1, Math.ceil(filteredGate.length / PAGE_SIZE));
   const page = Math.min(gatePage, gatePages);
   const visibleGate = filteredGate.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
-  const tabs: VpnTab[] = ['overview', 'wireguard', 'openvpn', 'vpngate', 'warp'];
 
   return (
-    <div className="flex h-screen overflow-hidden bg-black font-mono text-neutral-200">
-      <Sidebar user={user} onLogout={() => router.push('/login')} mobileOpen={mobileOpen} setMobileOpen={setMobileOpen} />
-      <div className="flex min-w-0 flex-1 flex-col overflow-y-auto">
-        <TopBar onToggleMobile={() => setMobileOpen(true)} />
-        <main className="max-w-7xl space-y-5 p-4 sm:p-6 lg:p-8">
-          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-neutral-800 pb-4">
-            <div>
-              <h1 className="flex items-center gap-2 text-base font-bold uppercase text-white"><Shield className="h-5 w-5" />VPN Management</h1>
-              <p className="mt-1 text-xs text-neutral-500">One active tunnel at a time. WARP may rotate its own registration while connected.</p>
-            </div>
-            <div className="flex gap-2">
-              <button onClick={() => void loadStatus()} className="border border-neutral-700 px-3 py-2 text-xs uppercase">Refresh</button>
-              {active && <button disabled={!canDisconnect} onClick={() => void disconnect()} className="flex items-center gap-1 border border-white bg-white px-3 py-2 text-xs font-bold uppercase text-black disabled:opacity-40"><Square className="h-3 w-3" />Disconnect</button>}
-            </div>
-          </div>
+    <AppShell>
+      <PageHeader
+        title="VPN"
+        description="Manage the container's outbound route. Only one tunnel can be active at a time."
+        actions={
+          <>
+            <Button variant="outline" onClick={() => void loadStatus()}>
+              <RefreshCw />
+              Refresh
+            </Button>
+            {active && (
+              <Button variant="destructive" disabled={!canDisconnect} onClick={() => void disconnect()}>
+                <Square />
+                Disconnect
+              </Button>
+            )}
+          </>
+        }
+      />
 
-          {error && <div className="flex gap-2 border border-neutral-700 p-3 text-xs text-white"><AlertTriangle className="h-4 w-4 shrink-0" />{error}</div>}
-          {busy && <div className="flex items-center gap-2 border border-neutral-800 p-3 text-xs"><RefreshCw className="h-4 w-4 animate-spin" />{busy}…</div>}
-          {active && <div className="border border-neutral-700 bg-neutral-950 p-3 text-xs"><strong className="text-white">ACTIVE VPN:</strong> <span className="text-neutral-300">{currentLabel}. Disconnect before connecting a different tunnel.</span></div>}
+      {error && <Alert variant="destructive"><AlertDescription>{error}</AlertDescription></Alert>}
+      {busy && <Alert><RefreshCw className="mb-2 size-4 animate-spin" /><AlertDescription>{busy}…</AlertDescription></Alert>}
+      {summary?.lastError && summary.status === 'error' && <Alert variant="destructive"><AlertDescription>{summary.lastError}</AlertDescription></Alert>}
 
-          <div className="flex overflow-x-auto border-b border-neutral-800">
-            {tabs.map((t) => <button key={t} onClick={() => setTab(t)} className={`px-4 py-2 text-xs font-bold uppercase ${tab === t ? 'border-b-2 border-white text-white' : 'text-neutral-500'}`}>{t === 'vpngate' ? 'VPNGate' : t === 'warp' ? 'Cloudflare WARP' : t}</button>)}
-          </div>
+      <Tabs value={tab} onValueChange={(value) => setTab(value as VpnTab)}>
+        <TabsList className="w-full justify-start overflow-x-auto sm:w-auto">
+          <TabsTrigger value="overview">Overview</TabsTrigger>
+          <TabsTrigger value="wireguard">WireGuard</TabsTrigger>
+          <TabsTrigger value="openvpn">OpenVPN</TabsTrigger>
+          <TabsTrigger value="vpngate">VPNGate</TabsTrigger>
+          <TabsTrigger value="warp">WARP</TabsTrigger>
+        </TabsList>
 
-          {tab === 'overview' && (
-            <div className="grid gap-4 lg:grid-cols-2">
-              <section className="border border-neutral-800 bg-neutral-950 p-5 text-xs">
-                <h2 className="mb-3 font-bold uppercase text-white">Current State</h2>
-                {[
-                  ['Status', summary?.status || 'off'], ['Type', summary?.type || 'off'], ['Profile / Server', currentLabel],
-                  ['Public IP', summary?.publicIp || 'Unknown'], ['Country', summary?.country || 'Unknown'],
-                  ['Connected Since', summary?.connectedSince ? new Date(summary.connectedSince).toLocaleString() : 'N/A'],
-                ].map(([k, v]) => <div key={k} className="flex justify-between border-b border-neutral-900 py-2"><span className="text-neutral-500">{k}</span><span className="text-white">{v}</span></div>)}
-                {summary?.lastError && <div className="mt-3 border border-neutral-700 p-3 text-neutral-300">{summary.lastError}</div>}
-              </section>
-              <section className="border border-neutral-800 bg-neutral-950 p-5 text-xs">
-                <div className="mb-4 flex items-center justify-between gap-3"><h2 className="flex items-center gap-2 font-bold uppercase text-white"><Gauge className="h-4 w-4" />Egress Speed Test</h2><button disabled={speedBusy} onClick={() => void runSpeedTest()} className="flex items-center gap-2 border border-neutral-700 px-3 py-1.5 uppercase disabled:opacity-50"><RefreshCw className={`h-3.5 w-3.5 ${speedBusy ? 'animate-spin' : ''}`} />{speedBusy ? 'Testing…' : 'Run Speed Test'}</button></div>
-                <p className="mb-4 text-[10px] text-neutral-500">Measures the container&apos;s current outbound route, including the active VPN if connected. Runs only when requested.</p>
-                <div className="grid grid-cols-2 gap-3">
-                  <div className="border border-neutral-800 bg-black p-4"><div className="text-[10px] uppercase text-neutral-500">Download</div><div className="mt-1 text-xl font-bold text-white">{speed ? speed.downloadMbps.toFixed(2) : '—'} <span className="text-xs font-normal text-neutral-500">Mbps</span></div></div>
-                  <div className="border border-neutral-800 bg-black p-4"><div className="text-[10px] uppercase text-neutral-500">Upload</div><div className="mt-1 text-xl font-bold text-white">{speed ? speed.uploadMbps.toFixed(2) : '—'} <span className="text-xs font-normal text-neutral-500">Mbps</span></div></div>
+        <TabsContent value="overview">
+          <div className="grid gap-6 lg:grid-cols-2">
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2"><Shield className="size-4" />Connection</CardTitle>
+                <CardDescription>Current outbound VPN state.</CardDescription>
+              </CardHeader>
+              <CardContent>
+                <DetailRows rows={[
+                  ['Status', <Badge key="status" variant={active ? 'success' : summary?.status === 'error' ? 'destructive' : 'secondary'}>{summary?.status || 'off'}</Badge>],
+                  ['Type', summary?.type || 'off'],
+                  ['Profile', currentLabel],
+                  ['Public IP', summary?.publicIp || 'Unknown'],
+                  ['Country', summary?.country || 'Unknown'],
+                  ['Connected since', summary?.connectedSince ? new Date(summary.connectedSince).toLocaleString() : 'N/A'],
+                ]} />
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader className="flex-row items-start justify-between gap-4">
+                <div>
+                  <CardTitle className="flex items-center gap-2"><Gauge className="size-4" />Speed test</CardTitle>
+                  <CardDescription>Measures the current outbound route.</CardDescription>
                 </div>
-                {speed && <div className="mt-3 text-[10px] text-neutral-600">Last test: {new Date(speed.testedAt).toLocaleString()}</div>}
-              </section>
-            </div>
-          )}
-
-          {tab === 'wireguard' && (
-            <section className="border border-neutral-800 bg-neutral-950">
-              <div className="flex items-center justify-between border-b border-neutral-800 p-4"><span className="text-xs font-bold uppercase text-white">WireGuard Profiles</span><button onClick={() => openCreate('wireguard')} className="flex items-center gap-1 border border-white bg-white px-3 py-1.5 text-xs font-bold uppercase text-black"><Plus className="h-3 w-3" />Add</button></div>
-              {wg.map((p) => { const isActive = active && summary?.type === 'wireguard' && summary.profileId === p.id; return <div key={p.id} className="flex flex-wrap items-center justify-between gap-3 border-b border-neutral-900 p-4 text-xs"><div><div className="font-bold text-white">{p.name}</div><div className="text-neutral-500">{p.endpoint || 'Configured'} · {p.enabled ? 'enabled' : 'disabled'}</div></div><div className="flex gap-2"><button disabled={!canConnect || isActive || !p.enabled} onClick={() => void connect('wireguard', p.id)} className="border border-white bg-white px-3 py-1.5 font-bold uppercase text-black disabled:opacity-30">{isActive ? 'Connected' : 'Connect'}</button><button disabled={isActive || operationBusy} onClick={() => void openEdit('wireguard', p.id)} className="border border-neutral-700 p-1.5 disabled:opacity-30" title="Edit"><Pencil className="h-3.5 w-3.5" /></button><button disabled={isActive || operationBusy} onClick={() => void deleteProfile('wireguard', p.id, p.name)} className="border border-neutral-700 p-1.5 disabled:opacity-30" title="Delete"><Trash2 className="h-3.5 w-3.5" /></button></div></div>; })}
-              {!wg.length && <div className="p-6 text-xs text-neutral-500">No WireGuard profiles.</div>}
-            </section>
-          )}
-
-          {tab === 'openvpn' && (
-            <section className="border border-neutral-800 bg-neutral-950">
-              <div className="flex items-center justify-between border-b border-neutral-800 p-4"><span className="text-xs font-bold uppercase text-white">OpenVPN Profiles</span><button onClick={() => openCreate('openvpn')} className="flex items-center gap-1 border border-white bg-white px-3 py-1.5 text-xs font-bold uppercase text-black"><Plus className="h-3 w-3" />Add</button></div>
-              {ovpn.map((p) => { const isActive = active && summary?.type === 'openvpn' && summary.profileId === p.id; return <div key={p.id} className="flex flex-wrap items-center justify-between gap-3 border-b border-neutral-900 p-4 text-xs"><div><div className="flex items-center gap-2 font-bold text-white"><span>{p.name}</span>{p.source === 'vpngate' && <span className="border border-neutral-700 px-1.5 py-0.5 text-[9px] font-normal uppercase text-neutral-400">Saved VPNGate</span>}</div><div className="text-neutral-500">{p.remotes?.[0] || 'Configured'} · {p.enabled ? 'enabled' : 'disabled'}</div></div><div className="flex gap-2"><button disabled={!canConnect || isActive || !p.enabled} onClick={() => void connect('openvpn', p.id)} className="border border-white bg-white px-3 py-1.5 font-bold uppercase text-black disabled:opacity-30">{isActive ? 'Connected' : 'Connect'}</button><button disabled={isActive || operationBusy} onClick={() => void openEdit('openvpn', p.id)} className="border border-neutral-700 p-1.5 disabled:opacity-30" title="Edit"><Pencil className="h-3.5 w-3.5" /></button><button disabled={isActive || operationBusy} onClick={() => void deleteProfile('openvpn', p.id, p.name)} className="border border-neutral-700 p-1.5 disabled:opacity-30" title="Delete"><Trash2 className="h-3.5 w-3.5" /></button></div></div>; })}
-              {!ovpn.length && <div className="p-6 text-xs text-neutral-500">No OpenVPN profiles.</div>}
-            </section>
-          )}
-
-          {tab === 'vpngate' && (
-            <section className="space-y-3">
-              <div className="flex gap-2"><div className="relative flex-1"><Search className="absolute left-3 top-2.5 h-4 w-4 text-neutral-500" /><input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search country, IP, host" className="w-full border border-neutral-800 bg-black py-2 pl-9 pr-3 text-xs text-white" /></div><button disabled={gateRefreshing} onClick={() => void loadGate(true)} className="flex min-w-28 items-center justify-center gap-2 border border-neutral-700 px-3 text-xs uppercase disabled:cursor-wait disabled:opacity-60"><RefreshCw className={`h-3.5 w-3.5 ${gateRefreshing ? 'animate-spin' : ''}`} />{gateRefreshing ? 'Refreshing…' : 'Refresh'}</button></div>
-              <div className="flex items-center justify-between text-[10px] text-neutral-500"><span>{filteredGate.length} relays · showing {visibleGate.length} per page</span><span>Page {page} / {gatePages}</span></div>
-              <div className="border border-neutral-800 bg-neutral-950">
-                {visibleGate.map((s) => { const isActive = active && summary?.profileId === `vpngate:${s.id}`; return <div key={s.id} className="flex flex-wrap items-center justify-between gap-3 border-b border-neutral-900 p-3 text-xs"><div><strong className="text-white">{s.countryLong} ({s.countryShort})</strong> <span className="text-neutral-400">{s.ip}</span><div className="text-[10px] text-neutral-500">{s.ping || 'N/A'} ms · {(s.speed / 1_000_000).toFixed(1)} Mbps · {s.sessions} sessions</div></div><div className="flex gap-2"><button disabled={!canConnect || isActive} onClick={() => void gateConnect(s)} className="flex items-center gap-1 border border-white bg-white px-2 py-1 font-bold uppercase text-black disabled:opacity-30"><Play className="h-3 w-3" />{isActive ? 'Connected' : 'Connect'}</button><button disabled={operationBusy} onClick={() => void gateSave(s)} className="flex items-center gap-1 border border-neutral-700 px-2 py-1 uppercase disabled:opacity-30"><Save className="h-3 w-3" />Save</button></div></div>; })}
-                {!visibleGate.length && <div className="p-8 text-center text-xs text-neutral-500">No VPNGate relays match your search.</div>}
-              </div>
-              <div className="flex justify-end gap-2"><button disabled={page <= 1} onClick={() => setGatePage((p) => Math.max(1, p - 1))} className="flex items-center gap-1 border border-neutral-700 px-3 py-1.5 text-xs uppercase disabled:opacity-30"><ChevronLeft className="h-3 w-3" />Previous</button><button disabled={page >= gatePages} onClick={() => setGatePage((p) => Math.min(gatePages, p + 1))} className="flex items-center gap-1 border border-neutral-700 px-3 py-1.5 text-xs uppercase disabled:opacity-30">Next<ChevronRight className="h-3 w-3" /></button></div>
-            </section>
-          )}
-
-          {tab === 'warp' && (
-            <section className="grid gap-4 lg:grid-cols-2">
-              <div className="border border-neutral-800 bg-neutral-950 p-5 text-xs">{[['Installed', warp?.installed ? 'YES' : 'NO'], ['Service', warp?.daemonRunning ? 'RUNNING' : 'STOPPED'], ['Registered', warp?.registered ? 'YES' : 'NO'], ['Connected', warp?.connected ? 'YES' : 'NO'], ['Mode', warp?.mode || 'Unknown'], ['Account', warp?.accountType || 'Unknown'], ['Device', warp?.deviceId || 'Unknown']].map(([k, v]) => <div key={k} className="flex justify-between gap-4 border-b border-neutral-900 py-2"><span className="text-neutral-500">{k}</span><span className="max-w-[60%] truncate text-white">{v}</span></div>)}</div>
-              <div className="border border-neutral-800 bg-neutral-950 p-5"><h2 className="mb-3 text-xs font-bold uppercase text-white">WARP Actions</h2><div className="grid grid-cols-2 gap-2 text-xs"><button disabled={operationBusy || active || !warp?.installed || Boolean(warp?.registered)} onClick={() => void warpAction('register')} className="border border-neutral-700 p-2 uppercase disabled:opacity-30">Register</button><button disabled={!canConnect || !warp?.installed || !warp?.registered || Boolean(warp?.connected)} onClick={() => void warpAction('connect')} className="border border-white bg-white p-2 font-bold uppercase text-black disabled:opacity-30">Connect</button><button disabled={operationBusy || !active || summary?.type !== 'warp'} onClick={() => void warpAction('disconnect')} className="border border-neutral-700 p-2 uppercase disabled:opacity-30">Disconnect</button><button disabled={operationBusy || !warp?.installed || !warp?.registered || (active && summary?.type !== 'warp')} onClick={() => void warpAction('rotate')} className="border border-neutral-700 p-2 uppercase disabled:opacity-30">Rotate</button></div><p className="mt-3 text-[10px] text-neutral-500">Rotate creates a new WARP registration. If WARP is currently connected, it disconnects briefly, rotates, and reconnects automatically.</p><div className="mt-3 whitespace-pre-wrap break-words border border-neutral-900 bg-black p-3 text-[10px] text-neutral-500">{warp?.details || 'No WARP status loaded.'}</div></div>
-            </section>
-          )}
-        </main>
-      </div>
-
-      {editor && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/85 p-4">
-          <div className="max-h-[90vh] w-full max-w-2xl overflow-y-auto border border-neutral-700 bg-neutral-950 p-5">
-            <div className="mb-4 flex items-center justify-between"><div><h2 className="text-sm font-bold uppercase text-white">{editor.id ? 'Edit' : 'Add'} {editor.kind === 'wireguard' ? 'WireGuard' : 'OpenVPN'} Profile</h2>{editor.source === 'vpngate' && <p className="mt-1 text-[10px] uppercase text-neutral-500">Saved from VPNGate</p>}</div><button onClick={closeEditor} className="border border-neutral-700 p-1.5"><X className="h-4 w-4" /></button></div>
-            <div className="space-y-4 text-xs">
-              {editorError && <div className="flex items-start gap-2 border border-rose-800 bg-rose-950/30 p-3 text-rose-200"><AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" /><div><div className="font-bold uppercase">Validation error</div><div className="mt-1 break-words text-[11px] leading-relaxed">{editorError}</div></div></div>}
-              <label className="block"><span className="mb-1 block text-neutral-500">Name</span><input value={editor.name} onChange={(e) => setEditor({ ...editor, name: e.target.value })} className="w-full border border-neutral-800 bg-black p-2 text-white" /></label>
-              <label className="block"><span className="mb-1 block text-neutral-500">Configuration</span><textarea value={editor.config} onChange={(e) => setEditor({ ...editor, config: e.target.value })} rows={14} spellCheck={false} className="w-full border border-neutral-800 bg-black p-2 font-mono text-[11px] text-white" /></label>
-              {editor.kind === 'openvpn' && <div className="grid gap-3 sm:grid-cols-2"><label><span className="mb-1 block text-neutral-500">Username</span><input value={editor.username} onChange={(e) => setEditor({ ...editor, username: e.target.value })} className="w-full border border-neutral-800 bg-black p-2 text-white" /></label><label><span className="mb-1 block text-neutral-500">Password</span><input type="password" value={editor.password} onChange={(e) => setEditor({ ...editor, password: e.target.value })} className="w-full border border-neutral-800 bg-black p-2 text-white" /></label></div>}
-              {editor.id && <label className="flex items-center gap-2 text-neutral-400"><input type="checkbox" checked={editor.enabled} onChange={(e) => setEditor({ ...editor, enabled: e.target.checked })} />Enabled</label>}
-              <div className="flex justify-end gap-2"><button onClick={closeEditor} className="border border-neutral-700 px-4 py-2 uppercase">Cancel</button><button disabled={editorSaving || !editor.name.trim() || !editor.config.trim()} onClick={() => void saveProfile()} className="flex items-center gap-2 border border-white bg-white px-4 py-2 font-bold uppercase text-black disabled:opacity-40"><Save className="h-3.5 w-3.5" />{editorSaving ? 'Saving…' : 'Save'}</button></div>
-            </div>
+                <Button variant="outline" size="sm" onClick={() => void runSpeedTest()} disabled={speedBusy}>
+                  <RefreshCw className={speedBusy ? 'animate-spin' : ''} />
+                  {speedBusy ? 'Testing…' : 'Run test'}
+                </Button>
+              </CardHeader>
+              <CardContent>
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="rounded-lg border p-4">
+                    <div className="text-sm text-muted-foreground">Download</div>
+                    <div className="mt-2 text-2xl font-semibold">{speed ? speed.downloadMbps.toFixed(2) : '—'} <span className="text-sm font-normal text-muted-foreground">Mbps</span></div>
+                  </div>
+                  <div className="rounded-lg border p-4">
+                    <div className="text-sm text-muted-foreground">Upload</div>
+                    <div className="mt-2 text-2xl font-semibold">{speed ? speed.uploadMbps.toFixed(2) : '—'} <span className="text-sm font-normal text-muted-foreground">Mbps</span></div>
+                  </div>
+                </div>
+                {speed && <div className="mt-3 text-xs text-muted-foreground">Last tested {new Date(speed.testedAt).toLocaleString()}</div>}
+              </CardContent>
+            </Card>
           </div>
-        </div>
-      )}
-    </div>
+        </TabsContent>
+
+        <TabsContent value="wireguard">
+          <Card>
+            <CardHeader className="flex-row items-start justify-between gap-4">
+              <div>
+                <CardTitle>WireGuard profiles</CardTitle>
+                <CardDescription>Imported WireGuard configurations available to the proxy.</CardDescription>
+              </div>
+              <Button size="sm" onClick={() => openCreate('wireguard')}><Plus />Add profile</Button>
+            </CardHeader>
+            <CardContent>
+              {wireguardProfiles.length === 0 ? (
+                <EmptyState title="No WireGuard profiles" description="Add a configuration to connect through WireGuard." />
+              ) : (
+                <div className="divide-y rounded-lg border">
+                  {wireguardProfiles.map((profile) => {
+                    const isActive = active && summary?.type === 'wireguard' && summary.profileId === profile.id;
+                    return (
+                      <div key={profile.id} className="flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:justify-between">
+                        <div className="min-w-0">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className="font-medium">{profile.name}</span>
+                            {isActive && <Badge variant="success">Connected</Badge>}
+                            {!profile.enabled && <Badge variant="secondary">Disabled</Badge>}
+                          </div>
+                          <div className="mt-1 truncate text-sm text-muted-foreground">{profile.endpoint || profile.address || 'Configured'}</div>
+                        </div>
+                        <div className="flex gap-1">
+                          <Button size="sm" disabled={!canConnect || isActive || !profile.enabled} onClick={() => void connect('wireguard', profile.id)}>{isActive ? 'Connected' : 'Connect'}</Button>
+                          <Button variant="ghost" size="icon" disabled={isActive || operationBusy} onClick={() => void openEdit('wireguard', profile.id)} aria-label={`Edit ${profile.name}`}><Pencil /></Button>
+                          <Button variant="ghost" size="icon" disabled={isActive || operationBusy} onClick={() => setDeleteTarget({ kind: 'wireguard', id: profile.id, name: profile.name })} aria-label={`Delete ${profile.name}`}><Trash2 /></Button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        <TabsContent value="openvpn">
+          <Card>
+            <CardHeader className="flex-row items-start justify-between gap-4">
+              <div>
+                <CardTitle>OpenVPN profiles</CardTitle>
+                <CardDescription>Uploaded configurations and VPNGate servers saved as profiles.</CardDescription>
+              </div>
+              <Button size="sm" onClick={() => openCreate('openvpn')}><Plus />Add profile</Button>
+            </CardHeader>
+            <CardContent>
+              {openvpnProfiles.length === 0 ? (
+                <EmptyState title="No OpenVPN profiles" description="Upload a configuration or save a VPNGate server." />
+              ) : (
+                <div className="divide-y rounded-lg border">
+                  {openvpnProfiles.map((profile) => {
+                    const isActive = active && summary?.type === 'openvpn' && summary.profileId === profile.id;
+                    return (
+                      <div key={profile.id} className="flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:justify-between">
+                        <div className="min-w-0">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className="font-medium">{profile.name}</span>
+                            {profile.source === 'vpngate' && <Badge variant="outline">VPNGate</Badge>}
+                            {isActive && <Badge variant="success">Connected</Badge>}
+                            {!profile.enabled && <Badge variant="secondary">Disabled</Badge>}
+                          </div>
+                          <div className="mt-1 truncate text-sm text-muted-foreground">{profile.remotes?.[0] || 'Configured'}</div>
+                        </div>
+                        <div className="flex gap-1">
+                          <Button size="sm" disabled={!canConnect || isActive || !profile.enabled} onClick={() => void connect('openvpn', profile.id)}>{isActive ? 'Connected' : 'Connect'}</Button>
+                          <Button variant="ghost" size="icon" disabled={isActive || operationBusy} onClick={() => void openEdit('openvpn', profile.id)} aria-label={`Edit ${profile.name}`}><Pencil /></Button>
+                          <Button variant="ghost" size="icon" disabled={isActive || operationBusy} onClick={() => setDeleteTarget({ kind: 'openvpn', id: profile.id, name: profile.name })} aria-label={`Delete ${profile.name}`}><Trash2 /></Button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        <TabsContent value="vpngate">
+          <div className="space-y-4">
+            <Card>
+              <CardContent className="p-4">
+                <div className="flex flex-col gap-3 sm:flex-row">
+                  <div className="relative flex-1">
+                    <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+                    <Input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search country, IP, or hostname" className="pl-9" />
+                  </div>
+                  <Button variant="outline" onClick={() => void loadGate(true)} disabled={gateRefreshing}>
+                    <RefreshCw className={gateRefreshing ? 'animate-spin' : ''} />
+                    {gateRefreshing ? 'Refreshing…' : 'Refresh servers'}
+                  </Button>
+                </div>
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader>
+                <CardTitle>Public VPNGate servers</CardTitle>
+                <CardDescription>{filteredGate.length} matching servers · page {page} of {gatePages}</CardDescription>
+              </CardHeader>
+              <CardContent>
+                {visibleGate.length === 0 ? (
+                  <EmptyState title="No VPNGate servers found" description="Refresh the list or change your search." />
+                ) : (
+                  <div className="divide-y rounded-lg border">
+                    {visibleGate.map((server) => {
+                      const isActive = active && summary?.profileId === `vpngate:${server.id}`;
+                      return (
+                        <div key={server.id} className="flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:justify-between">
+                          <div className="min-w-0">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <span className="font-medium">{server.countryLong}</span>
+                              <Badge variant="outline">{server.countryShort}</Badge>
+                              {isActive && <Badge variant="success">Connected</Badge>}
+                            </div>
+                            <div className="mt-1 font-mono text-xs text-muted-foreground">{server.ip}</div>
+                            <div className="mt-1 text-xs text-muted-foreground">{server.ping || 'N/A'} ms · {(server.speed / 1_000_000).toFixed(1)} Mbps · {server.sessions} sessions</div>
+                          </div>
+                          <div className="flex gap-2">
+                            <Button size="sm" disabled={!canConnect || isActive} onClick={() => void connectGate(server)}><Play />{isActive ? 'Connected' : 'Connect'}</Button>
+                            <Button variant="outline" size="sm" disabled={operationBusy} onClick={() => void saveGate(server)}><Save />Save</Button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+
+                <div className="mt-4 flex justify-end gap-2">
+                  <Button variant="outline" size="sm" disabled={page <= 1} onClick={() => setGatePage((current) => Math.max(1, current - 1))}><ChevronLeft />Previous</Button>
+                  <Button variant="outline" size="sm" disabled={page >= gatePages} onClick={() => setGatePage((current) => Math.min(gatePages, current + 1))}>Next<ChevronRight /></Button>
+                </div>
+              </CardContent>
+            </Card>
+          </div>
+        </TabsContent>
+
+        <TabsContent value="warp">
+          <div className="grid gap-6 lg:grid-cols-2">
+            <Card>
+              <CardHeader>
+                <CardTitle>Cloudflare WARP</CardTitle>
+                <CardDescription>Local WARP client status.</CardDescription>
+              </CardHeader>
+              <CardContent>
+                <DetailRows rows={[
+                  ['Installed', warp?.installed ? 'Yes' : 'No'],
+                  ['Service', warp?.daemonRunning ? 'Running' : 'Stopped'],
+                  ['Registered', warp?.registered ? 'Yes' : 'No'],
+                  ['Connected', warp?.connected ? 'Yes' : 'No'],
+                  ['Mode', warp?.mode || 'Unknown'],
+                  ['Account', warp?.accountType || 'Unknown'],
+                  ['Device', warp?.deviceId || 'Unknown'],
+                ]} />
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader>
+                <CardTitle>Actions</CardTitle>
+                <CardDescription>Register, connect, disconnect, or rotate the WARP identity.</CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="grid grid-cols-2 gap-2">
+                  <Button variant="outline" disabled={operationBusy || active || !warp?.installed || Boolean(warp?.registered)} onClick={() => void warpAction('register')}>Register</Button>
+                  <Button disabled={!canConnect || !warp?.installed || !warp?.registered || Boolean(warp?.connected)} onClick={() => void warpAction('connect')}>Connect</Button>
+                  <Button variant="outline" disabled={operationBusy || !active || summary?.type !== 'warp'} onClick={() => void warpAction('disconnect')}>Disconnect</Button>
+                  <Button variant="outline" disabled={operationBusy || !warp?.installed || !warp?.registered || (active && summary?.type !== 'warp')} onClick={() => void warpAction('rotate')}>Rotate</Button>
+                </div>
+                {warp?.details && <pre className="max-h-48 overflow-auto whitespace-pre-wrap rounded-lg bg-muted p-3 text-xs text-muted-foreground">{warp.details}</pre>}
+              </CardContent>
+            </Card>
+          </div>
+        </TabsContent>
+      </Tabs>
+
+      <Dialog open={Boolean(editor)} onOpenChange={(open) => !open && closeEditor()}>
+        <DialogContent className="max-w-2xl">
+          {editor && (
+            <>
+              <DialogHeader>
+                <DialogTitle>{editor.id ? 'Edit' : 'Add'} {editor.kind === 'wireguard' ? 'WireGuard' : 'OpenVPN'} profile</DialogTitle>
+                <DialogDescription>Paste a complete, valid VPN configuration.</DialogDescription>
+              </DialogHeader>
+
+              {editorError && (
+                <Alert variant="destructive" className="mb-5">
+                  <AlertTitle>Validation error</AlertTitle>
+                  <AlertDescription>{editorError}</AlertDescription>
+                </Alert>
+              )}
+
+              <div className="space-y-4">
+                <div className="space-y-2">
+                  <Label htmlFor="vpn-profile-name">Name</Label>
+                  <Input id="vpn-profile-name" value={editor.name} onChange={(event) => setEditor({ ...editor, name: event.target.value })} />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="vpn-profile-config">Configuration</Label>
+                  <Textarea id="vpn-profile-config" rows={14} spellCheck={false} value={editor.config} onChange={(event) => setEditor({ ...editor, config: event.target.value })} className="font-mono text-xs" />
+                </div>
+
+                {editor.kind === 'openvpn' && (
+                  <div className="grid gap-4 sm:grid-cols-2">
+                    <div className="space-y-2">
+                      <Label htmlFor="vpn-profile-username">Username</Label>
+                      <Input id="vpn-profile-username" value={editor.username} onChange={(event) => setEditor({ ...editor, username: event.target.value })} />
+                    </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="vpn-profile-password">Password</Label>
+                      <Input id="vpn-profile-password" type="password" value={editor.password} onChange={(event) => setEditor({ ...editor, password: event.target.value })} />
+                    </div>
+                  </div>
+                )}
+
+                {editor.id && (
+                  <label className="flex items-center justify-between rounded-lg border p-3 text-sm">
+                    <span>Enabled</span>
+                    <input type="checkbox" checked={editor.enabled} onChange={(event) => setEditor({ ...editor, enabled: event.target.checked })} className="size-4 accent-current" />
+                  </label>
+                )}
+              </div>
+
+              <DialogFooter>
+                <Button variant="outline" onClick={closeEditor}>Cancel</Button>
+                <Button disabled={editorSaving || !editor.name.trim() || !editor.config.trim()} onClick={() => void saveProfile()}>
+                  <Save />
+                  {editorSaving ? 'Saving…' : 'Save profile'}
+                </Button>
+              </DialogFooter>
+            </>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={Boolean(deleteTarget)} onOpenChange={(open) => !open && setDeleteTarget(null)}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Delete VPN profile?</DialogTitle>
+            <DialogDescription>{deleteTarget ? `${deleteTarget.name} will be permanently removed.` : 'This profile will be removed.'}</DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setDeleteTarget(null)}>Cancel</Button>
+            <Button variant="destructive" onClick={() => void deleteProfile()}>Delete profile</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </AppShell>
   );
 }

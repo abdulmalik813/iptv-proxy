@@ -1,11 +1,27 @@
 'use client';
 
-import React, { useCallback, useEffect, useState } from 'react';
+import * as React from 'react';
 import Link from 'next/link';
-import { useRouter } from 'next/navigation';
-import { AlertTriangle, Edit2, FlaskConical, Plus, RefreshCw, Search, Star, Trash2, Tv, X } from 'lucide-react';
-import { Sidebar } from '@/components/layout/sidebar';
-import { TopBar } from '@/components/layout/top-bar';
+import { Edit3, FlaskConical, Plus, RefreshCw, Search, Star, Trash2, Tv } from 'lucide-react';
+import { AppShell } from '@/components/layout/app-shell';
+import { PageHeader } from '@/components/layout/page-header';
+import { Alert, AlertDescription } from '@/components/ui/alert';
+import { Badge } from '@/components/ui/badge';
+import { Button, buttonVariants } from '@/components/ui/button';
+import { Card, CardContent } from '@/components/ui/card';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
+import { EmptyState } from '@/components/ui/empty-state';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
+import { apiPath, readJson } from '@/lib/client/api';
 
 interface ProviderItem {
   id: string;
@@ -35,73 +51,48 @@ type ProviderPayload = {
   enabled: boolean;
 };
 
-async function responseJson(response: Response): Promise<Record<string, unknown>> {
-  const raw = await response.text();
-  if (!raw) return {};
-  try {
-    return JSON.parse(raw) as Record<string, unknown>;
-  } catch {
-    return { success: false, error: raw };
-  }
-}
+type Envelope<T = unknown> = { success?: boolean; data?: T; error?: string };
 
 export default function ProvidersPage() {
-  const router = useRouter();
-  const [mobileOpen, setMobileOpen] = useState(false);
-  const [user, setUser] = useState<{ username: string } | null>(null);
-  const [providers, setProviders] = useState<ProviderItem[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [search, setSearch] = useState('');
-  const [pageError, setPageError] = useState<string | null>(null);
+  const [providers, setProviders] = React.useState<ProviderItem[]>([]);
+  const [loading, setLoading] = React.useState(true);
+  const [search, setSearch] = React.useState('');
+  const [pageError, setPageError] = React.useState<string | null>(null);
+  const [modalOpen, setModalOpen] = React.useState(false);
+  const [editingId, setEditingId] = React.useState<string | null>(null);
+  const [formError, setFormError] = React.useState<string | null>(null);
+  const [saving, setSaving] = React.useState(false);
+  const [deleteId, setDeleteId] = React.useState<string | null>(null);
+  const [deleting, setDeleting] = React.useState(false);
+  const [name, setName] = React.useState('');
+  const [host, setHost] = React.useState('');
+  const [route, setRoute] = React.useState('');
+  const [upstreamUsername, setUpstreamUsername] = React.useState('');
+  const [upstreamPassword, setUpstreamPassword] = React.useState('');
+  const [localUsername, setLocalUsername] = React.useState('');
+  const [localPassword, setLocalPassword] = React.useState('');
+  const [isDefault, setIsDefault] = React.useState(false);
+  const [cacheHours, setCacheHours] = React.useState(1);
+  const [enabled, setEnabled] = React.useState(true);
 
-  const [modalOpen, setModalOpen] = useState(false);
-  const [editingId, setEditingId] = useState<string | null>(null);
-  const [formError, setFormError] = useState<string | null>(null);
-  const [saving, setSaving] = useState(false);
-
-  const [name, setName] = useState('');
-  const [host, setHost] = useState('');
-  const [route, setRoute] = useState('');
-  const [upstreamUsername, setUpstreamUsername] = useState('');
-  const [upstreamPassword, setUpstreamPassword] = useState('');
-  const [localUsername, setLocalUsername] = useState('');
-  const [localPassword, setLocalPassword] = useState('');
-  const [isDefault, setIsDefault] = useState(false);
-  const [cacheHours, setCacheHours] = useState(1);
-  const [enabled, setEnabled] = useState(true);
-
-  const [deleteId, setDeleteId] = useState<string | null>(null);
-  const [deleting, setDeleting] = useState(false);
-
-  const loadProviders = useCallback(async () => {
+  const loadProviders = React.useCallback(async () => {
     setLoading(true);
     setPageError(null);
     try {
-      const [authRes, providerRes] = await Promise.all([
-        fetch('/api/auth/me', { cache: 'no-store' }),
-        fetch('/api/providers', { cache: 'no-store' }),
-      ]);
-
-      if (authRes.status === 401) {
-        router.replace('/login');
-        return;
+      const response = await fetch(apiPath('/api/providers'), { cache: 'no-store' });
+      const payload = await readJson<Envelope<ProviderItem[]>>(response);
+      if (!response.ok || !payload.success || !payload.data) {
+        throw new Error(payload.error || `Unable to load providers (HTTP ${response.status}).`);
       }
-
-      const auth = await responseJson(authRes);
-      const providerPayload = await responseJson(providerRes);
-      if (auth.authenticated) setUser(auth.user as { username: string });
-      if (!providerRes.ok || !providerPayload.success) {
-        throw new Error(String(providerPayload.error || `Unable to load providers (HTTP ${providerRes.status}).`));
-      }
-      setProviders(providerPayload.data as ProviderItem[]);
+      setProviders(payload.data);
     } catch (error) {
       setPageError(error instanceof Error ? error.message : String(error));
     } finally {
       setLoading(false);
     }
-  }, [router]);
+  }, []);
 
-  useEffect(() => {
+  React.useEffect(() => {
     void loadProviders();
   }, [loadProviders]);
 
@@ -131,9 +122,9 @@ export default function ProvidersPage() {
     setHost(provider.host);
     setRoute(provider.route);
     setUpstreamUsername(provider.upstream_username);
-    setUpstreamPassword('••••••••');
+    setUpstreamPassword('');
     setLocalUsername(provider.local_username);
-    setLocalPassword('••••••••');
+    setLocalPassword('');
     setIsDefault(provider.is_default === 1);
     setCacheHours(provider.cache_duration_hours);
     setEnabled(provider.enabled === 1);
@@ -147,26 +138,26 @@ export default function ProvidersPage() {
     setFormError(null);
 
     const payload: ProviderPayload = {
-      name,
-      host,
-      route,
-      upstream_username: upstreamUsername,
-      local_username: localUsername,
+      name: name.trim(),
+      host: host.trim(),
+      route: route.trim(),
+      upstream_username: upstreamUsername.trim(),
+      local_username: localUsername.trim(),
       is_default: isDefault,
       cache_duration_hours: Number(cacheHours),
       enabled,
     };
-    if (upstreamPassword && upstreamPassword !== '••••••••') payload.upstream_password = upstreamPassword;
-    if (localPassword && localPassword !== '••••••••') payload.local_password = localPassword;
+    if (upstreamPassword) payload.upstream_password = upstreamPassword;
+    if (localPassword) payload.local_password = localPassword;
 
     try {
-      const response = await fetch(editingId ? `/api/providers/${editingId}` : '/api/providers', {
+      const response = await fetch(apiPath(editingId ? `/api/providers/${editingId}` : '/api/providers'), {
         method: editingId ? 'PUT' : 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
       });
-      const result = await responseJson(response);
-      if (!response.ok || !result.success) throw new Error(String(result.error || 'Failed to save provider.'));
+      const result = await readJson<Envelope>(response);
+      if (!response.ok || !result.success) throw new Error(result.error || 'Failed to save provider.');
       setModalOpen(false);
       await loadProviders();
     } catch (error) {
@@ -179,9 +170,9 @@ export default function ProvidersPage() {
   const setDefaultProvider = async (id: string) => {
     setPageError(null);
     try {
-      const response = await fetch(`/api/providers/${id}/default`, { method: 'POST' });
-      const result = await responseJson(response);
-      if (!response.ok || !result.success) throw new Error(String(result.error || 'Failed to set default provider.'));
+      const response = await fetch(apiPath(`/api/providers/${id}/default`), { method: 'POST' });
+      const result = await readJson<Envelope>(response);
+      if (!response.ok || !result.success) throw new Error(result.error || 'Failed to set default provider.');
       await loadProviders();
     } catch (error) {
       setPageError(error instanceof Error ? error.message : String(error));
@@ -193,9 +184,9 @@ export default function ProvidersPage() {
     setDeleting(true);
     setPageError(null);
     try {
-      const response = await fetch(`/api/providers/${deleteId}`, { method: 'DELETE' });
-      const result = await responseJson(response);
-      if (!response.ok || !result.success) throw new Error(String(result.error || 'Failed to delete provider.'));
+      const response = await fetch(apiPath(`/api/providers/${deleteId}`), { method: 'DELETE' });
+      const result = await readJson<Envelope>(response);
+      if (!response.ok || !result.success) throw new Error(result.error || 'Failed to delete provider.');
       setDeleteId(null);
       await loadProviders();
     } catch (error) {
@@ -205,142 +196,225 @@ export default function ProvidersPage() {
     }
   };
 
-  const filtered = providers.filter((provider) => {
-    const value = search.toLowerCase();
-    return provider.name.toLowerCase().includes(value) || provider.route.toLowerCase().includes(value) || provider.host.toLowerCase().includes(value);
-  });
+  const filtered = React.useMemo(() => {
+    const query = search.trim().toLowerCase();
+    if (!query) return providers;
+    return providers.filter((provider) =>
+      provider.name.toLowerCase().includes(query)
+      || provider.route.toLowerCase().includes(query)
+      || provider.host.toLowerCase().includes(query),
+    );
+  }, [providers, search]);
+
+  const selectedForDelete = providers.find((provider) => provider.id === deleteId);
 
   return (
-    <div className="flex h-screen overflow-hidden bg-black font-mono text-neutral-200">
-      <Sidebar user={user} onLogout={() => router.push('/login')} mobileOpen={mobileOpen} setMobileOpen={setMobileOpen} />
-      <div className="flex min-w-0 flex-1 flex-col overflow-y-auto">
-        <TopBar onToggleMobile={() => setMobileOpen(true)} />
-        <main className="max-w-7xl space-y-6 p-4 sm:p-6 lg:p-8">
-          <div className="flex flex-col gap-4 border-b border-neutral-800 pb-4 sm:flex-row sm:items-center sm:justify-between">
-            <div>
-              <h1 className="flex items-center gap-2 text-base font-bold uppercase tracking-tight text-white sm:text-lg"><Tv className="h-5 w-5" /> IPTV Providers</h1>
-              <p className="text-xs text-neutral-500">Manage upstream Xtream accounts, local routes, credentials, and metadata cache settings.</p>
-            </div>
-            <div className="flex gap-2">
-              <Link href="/providers/tests" className="flex items-center gap-2 border border-neutral-700 bg-black px-3 py-2 text-xs font-bold uppercase text-neutral-200 hover:border-white"><FlaskConical className="h-3.5 w-3.5" /> Account Tests</Link>
-              <button onClick={openCreate} className="flex items-center gap-2 border border-white bg-white px-3.5 py-2 text-xs font-bold uppercase tracking-wider text-black hover:bg-neutral-200"><Plus className="h-3.5 w-3.5" /> Add Provider</button>
-            </div>
-          </div>
+    <AppShell>
+      <PageHeader
+        title="Providers"
+        description="Configure upstream Xtream accounts, client credentials, routes, and metadata caching."
+        actions={
+          <>
+            <Link href="/providers/tests" className={buttonVariants({ variant: 'outline' })}>
+              <FlaskConical className="size-4" />
+              Test providers
+            </Link>
+            <Button onClick={openCreate}>
+              <Plus />
+              Add provider
+            </Button>
+          </>
+        }
+      />
 
-          {pageError && <div className="border border-rose-900 bg-rose-950/30 p-3 text-xs text-rose-300"><pre className="whitespace-pre-wrap break-all">{pageError}</pre></div>}
-
-          <div className="flex flex-col gap-3 border border-neutral-800 bg-neutral-950 p-3 sm:flex-row sm:items-center sm:justify-between">
-            <div className="relative max-w-md flex-1">
-              <Search className="absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-neutral-500" />
-              <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Filter by name, route, or host..." className="w-full border border-neutral-800 bg-black py-1.5 pl-9 pr-3 text-xs text-white outline-none focus:border-white" />
-            </div>
-            <div className="flex items-center gap-3 text-xs text-neutral-400">
-              <span>Total: <strong className="text-white">{providers.length}</strong></span>
-              <span>Enabled: <strong className="text-emerald-400">{providers.filter((provider) => provider.enabled === 1).length}</strong></span>
-              <button onClick={() => void loadProviders()} title="Refresh" className="border border-neutral-800 bg-black p-1 text-neutral-400 hover:text-white"><RefreshCw className={`h-3.5 w-3.5 ${loading ? 'animate-spin' : ''}`} /></button>
-            </div>
-          </div>
-
-          <div className="border border-neutral-800 bg-neutral-950">
-            {loading && providers.length === 0 ? (
-              <div className="p-8 text-center text-xs text-neutral-500"><RefreshCw className="mx-auto mb-2 h-4 w-4 animate-spin" />Loading providers...</div>
-            ) : filtered.length === 0 ? (
-              <div className="p-8 text-center text-xs text-neutral-500">No providers match this filter.</div>
-            ) : (
-              <div className="overflow-x-auto">
-                <table className="w-full text-left text-xs">
-                  <thead className="border-b border-neutral-800 bg-neutral-900 text-[10px] uppercase text-neutral-400">
-                    <tr><th className="p-3">Name</th><th className="p-3">Route</th><th className="p-3">Upstream</th><th className="p-3">Cache</th><th className="p-3">Status</th><th className="p-3">Default</th><th className="p-3 text-right">Actions</th></tr>
-                  </thead>
-                  <tbody className="divide-y divide-neutral-900">
-                    {filtered.map((provider) => (
-                      <tr key={provider.id} className="hover:bg-neutral-900/40">
-                        <td className="p-3 font-medium text-white">{provider.name}</td>
-                        <td className="p-3"><span className="border border-neutral-800 bg-black px-2 py-0.5 text-[11px]">/{provider.route}</span></td>
-                        <td className="max-w-[260px] truncate p-3 text-neutral-400" title={provider.host}>{provider.host}</td>
-                        <td className="p-3 text-neutral-300">{provider.cache_duration_hours === 0 ? 'Off' : `${provider.cache_duration_hours}h`}</td>
-                        <td className="p-3"><span className={provider.enabled === 1 ? 'text-emerald-400' : 'text-neutral-600'}>{provider.enabled === 1 ? 'ACTIVE' : 'DISABLED'}</span></td>
-                        <td className="p-3">
-                          {provider.is_default === 1 ? <span className="inline-flex items-center gap-1 bg-white px-2 py-0.5 text-[9px] font-bold text-black"><Star className="h-2.5 w-2.5 fill-black" /> DEFAULT</span> : <button onClick={() => void setDefaultProvider(provider.id)} className="border border-neutral-800 bg-black px-2 py-0.5 text-[10px] text-neutral-500 hover:text-white">Make Default</button>}
-                        </td>
-                        <td className="p-3 text-right">
-                          <div className="flex justify-end gap-1.5">
-                            <button onClick={() => openEdit(provider)} title="Edit" className="border border-neutral-800 bg-black p-1.5 text-neutral-300 hover:text-white"><Edit2 className="h-3.5 w-3.5" /></button>
-                            <button onClick={() => setDeleteId(provider.id)} title="Delete" className="border border-neutral-800 bg-black p-1.5 text-neutral-400 hover:text-rose-300"><Trash2 className="h-3.5 w-3.5" /></button>
-                          </div>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </div>
-        </main>
-      </div>
-
-      {modalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4 backdrop-blur-xs">
-          <div className="max-h-[90vh] w-full max-w-xl space-y-4 overflow-y-auto border border-neutral-800 bg-neutral-950 p-6">
-            <div className="flex items-center justify-between border-b border-neutral-800 pb-3">
-              <h2 className="text-sm font-bold uppercase text-white">{editingId ? 'Edit IPTV Provider' : 'Add IPTV Provider'}</h2>
-              <button onClick={() => setModalOpen(false)} className="text-neutral-500 hover:text-white"><X className="h-4 w-4" /></button>
-            </div>
-
-            {formError && <div className="flex items-start gap-2 border border-rose-800 bg-rose-950/40 p-3 text-xs text-rose-300"><AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" /><pre className="whitespace-pre-wrap break-all">{formError}</pre></div>}
-
-            <form onSubmit={saveProvider} className="space-y-4 text-xs">
-              <div className="grid gap-4 sm:grid-cols-2">
-                <label className="space-y-1"><span className="block text-[11px] font-semibold uppercase text-neutral-400">Provider Name *</span><input required value={name} onChange={(event) => setName(event.target.value)} className="w-full border border-neutral-800 bg-black px-3 py-2 text-white outline-none focus:border-white" /></label>
-                <label className="space-y-1"><span className="block text-[11px] font-semibold uppercase text-neutral-400">Local Route *</span><input required value={route} onChange={(event) => setRoute(event.target.value)} placeholder="bedroom" className="w-full border border-neutral-800 bg-black px-3 py-2 text-white outline-none focus:border-white" /></label>
-              </div>
-
-              <label className="space-y-1"><span className="block text-[11px] font-semibold uppercase text-neutral-400">Upstream Host URL *</span><input required type="url" value={host} onChange={(event) => setHost(event.target.value)} placeholder="http://provider.example.com:8080" className="w-full border border-neutral-800 bg-black px-3 py-2 text-white outline-none focus:border-white" /></label>
-
-              <div className="space-y-3 border border-neutral-900 bg-black p-3">
-                <div className="text-[10px] font-bold uppercase tracking-wider text-neutral-400">Upstream Xtream Credentials</div>
-                <div className="grid gap-3 sm:grid-cols-2">
-                  <label className="space-y-1"><span className="block text-[10px] uppercase text-neutral-400">Username *</span><input required value={upstreamUsername} onChange={(event) => setUpstreamUsername(event.target.value)} className="w-full border border-neutral-800 bg-neutral-950 px-2.5 py-1.5 text-white outline-none focus:border-white" /></label>
-                  <label className="space-y-1"><span className="block text-[10px] uppercase text-neutral-400">Password *</span><input required={!editingId} type="password" value={upstreamPassword} onChange={(event) => setUpstreamPassword(event.target.value)} placeholder={editingId ? '•••••••• (unchanged)' : 'password'} className="w-full border border-neutral-800 bg-neutral-950 px-2.5 py-1.5 text-white outline-none focus:border-white" /></label>
-                </div>
-              </div>
-
-              <div className="space-y-3 border border-neutral-900 bg-black p-3">
-                <div className="text-[10px] font-bold uppercase tracking-wider text-neutral-400">Local Client Credentials</div>
-                <div className="grid gap-3 sm:grid-cols-2">
-                  <label className="space-y-1"><span className="block text-[10px] uppercase text-neutral-400">Username *</span><input required value={localUsername} onChange={(event) => setLocalUsername(event.target.value)} className="w-full border border-neutral-800 bg-neutral-950 px-2.5 py-1.5 text-white outline-none focus:border-white" /></label>
-                  <label className="space-y-1"><span className="block text-[10px] uppercase text-neutral-400">Password *</span><input required={!editingId} type="password" value={localPassword} onChange={(event) => setLocalPassword(event.target.value)} placeholder={editingId ? '•••••••• (unchanged)' : 'client password'} className="w-full border border-neutral-800 bg-neutral-950 px-2.5 py-1.5 text-white outline-none focus:border-white" /></label>
-                </div>
-              </div>
-
-              <div>
-                <div className="mb-1 flex items-center justify-between"><span className="text-[11px] font-semibold uppercase text-neutral-400">Metadata Cache</span><span className="text-[10px] text-neutral-500">{cacheHours === 0 ? 'Disabled' : `${cacheHours}h`}</span></div>
-                <input type="range" min="0" max="24" value={cacheHours} onChange={(event) => setCacheHours(Number.parseInt(event.target.value, 10))} className="w-full accent-white" />
-              </div>
-
-              <div className="flex items-center justify-between border-t border-neutral-900 pt-3">
-                <label className="flex items-center gap-2 text-neutral-300"><input type="checkbox" checked={isDefault} onChange={(event) => setIsDefault(event.target.checked)} className="accent-white" /> Set as Default</label>
-                <label className="flex items-center gap-2 text-neutral-300"><input type="checkbox" checked={enabled} onChange={(event) => setEnabled(event.target.checked)} className="accent-white" /> Enabled</label>
-              </div>
-
-              <div className="flex justify-end gap-2 border-t border-neutral-800 pt-4">
-                <button type="button" onClick={() => setModalOpen(false)} className="border border-neutral-800 bg-black px-4 py-2 text-xs uppercase text-neutral-400 hover:text-white">Cancel</button>
-                <button type="submit" disabled={saving} className="border border-white bg-white px-4 py-2 text-xs font-bold uppercase text-black hover:bg-neutral-200 disabled:opacity-50">{saving ? 'Saving...' : editingId ? 'Update Provider' : 'Create Provider'}</button>
-              </div>
-            </form>
-          </div>
-        </div>
+      {pageError && (
+        <Alert variant="destructive">
+          <AlertDescription>{pageError}</AlertDescription>
+        </Alert>
       )}
 
-      {deleteId && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4 backdrop-blur-xs">
-          <div className="w-full max-w-sm space-y-4 border border-neutral-800 bg-neutral-950 p-6">
-            <div className="flex items-center gap-3"><AlertTriangle className="h-5 w-5 text-rose-400" /><h2 className="text-sm font-bold uppercase text-white">Delete Provider</h2></div>
-            <p className="text-xs text-neutral-400">Delete this provider? Clients using its route will lose access immediately.</p>
-            <div className="flex justify-end gap-2"><button onClick={() => setDeleteId(null)} className="border border-neutral-800 px-3 py-1.5 text-xs uppercase text-neutral-400">Cancel</button><button onClick={() => void deleteProvider()} disabled={deleting} className="bg-rose-600 px-3 py-1.5 text-xs font-bold uppercase text-white disabled:opacity-50">{deleting ? 'Deleting...' : 'Confirm Delete'}</button></div>
+      <Card>
+        <CardContent className="p-4">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div className="relative w-full max-w-md">
+              <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                value={search}
+                onChange={(event) => setSearch(event.target.value)}
+                placeholder="Search providers"
+                className="pl-9"
+              />
+            </div>
+            <div className="flex items-center gap-3 text-sm text-muted-foreground">
+              <span>{providers.length} total</span>
+              <span>{providers.filter((provider) => provider.enabled === 1).length} enabled</span>
+              <Button variant="ghost" size="icon" onClick={() => void loadProviders()} disabled={loading} aria-label="Refresh providers">
+                <RefreshCw className={loading ? 'animate-spin' : ''} />
+              </Button>
+            </div>
           </div>
-        </div>
+        </CardContent>
+      </Card>
+
+      {loading && providers.length === 0 ? (
+        <Card><CardContent className="p-8 text-center text-sm text-muted-foreground">Loading providers…</CardContent></Card>
+      ) : filtered.length === 0 ? (
+        <EmptyState
+          icon={<Tv className="size-6" />}
+          title={providers.length === 0 ? 'No providers configured' : 'No providers found'}
+          description={providers.length === 0 ? 'Add your first Xtream provider to begin routing traffic.' : 'Try a different search.'}
+          action={providers.length === 0 ? <Button size="sm" onClick={openCreate}><Plus />Add provider</Button> : undefined}
+        />
+      ) : (
+        <Card>
+          <CardContent className="p-0">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Provider</TableHead>
+                  <TableHead>Route</TableHead>
+                  <TableHead>Upstream</TableHead>
+                  <TableHead>Cache</TableHead>
+                  <TableHead>Status</TableHead>
+                  <TableHead className="text-right">Actions</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {filtered.map((provider) => (
+                  <TableRow key={provider.id}>
+                    <TableCell>
+                      <div className="flex flex-wrap items-center gap-2 font-medium">
+                        {provider.name}
+                        {provider.is_default === 1 && <Badge variant="secondary"><Star className="mr-1 size-3" />Default</Badge>}
+                      </div>
+                      <div className="mt-1 text-xs text-muted-foreground">Client: {provider.local_username}</div>
+                    </TableCell>
+                    <TableCell className="font-mono text-xs">/{provider.route}</TableCell>
+                    <TableCell className="max-w-72 truncate text-muted-foreground" title={provider.host}>{provider.host}</TableCell>
+                    <TableCell>{provider.cache_duration_hours === 0 ? 'Off' : `${provider.cache_duration_hours}h`}</TableCell>
+                    <TableCell><Badge variant={provider.enabled === 1 ? 'success' : 'secondary'}>{provider.enabled === 1 ? 'Enabled' : 'Disabled'}</Badge></TableCell>
+                    <TableCell>
+                      <div className="flex justify-end gap-1">
+                        {provider.is_default !== 1 && (
+                          <Button variant="ghost" size="sm" onClick={() => void setDefaultProvider(provider.id)}>Set default</Button>
+                        )}
+                        <Button variant="ghost" size="icon" onClick={() => openEdit(provider)} aria-label={`Edit ${provider.name}`}>
+                          <Edit3 />
+                        </Button>
+                        <Button variant="ghost" size="icon" onClick={() => setDeleteId(provider.id)} aria-label={`Delete ${provider.name}`}>
+                          <Trash2 />
+                        </Button>
+                      </div>
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </CardContent>
+        </Card>
       )}
-    </div>
+
+      <Dialog open={modalOpen} onOpenChange={(open) => { setModalOpen(open); if (!open) setFormError(null); }}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>{editingId ? 'Edit provider' : 'Add provider'}</DialogTitle>
+            <DialogDescription>Provider credentials stay on the server and are never returned to the browser after saving.</DialogDescription>
+          </DialogHeader>
+
+          {formError && (
+            <Alert variant="destructive" className="mb-5">
+              <AlertDescription>{formError}</AlertDescription>
+            </Alert>
+          )}
+
+          <form id="provider-form" onSubmit={saveProvider} className="space-y-6">
+            <div className="grid gap-4 sm:grid-cols-2">
+              <div className="space-y-2">
+                <Label htmlFor="provider-name">Name</Label>
+                <Input id="provider-name" value={name} onChange={(event) => setName(event.target.value)} required />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="provider-route">Route</Label>
+                <Input id="provider-route" value={route} onChange={(event) => setRoute(event.target.value)} placeholder="strong" required />
+                <p className="text-xs text-muted-foreground">Used as /{route || 'route'}/…</p>
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="provider-host">Upstream URL</Label>
+              <Input id="provider-host" type="url" value={host} onChange={(event) => setHost(event.target.value)} placeholder="http://provider.example.com:8080" required />
+            </div>
+
+            <div className="grid gap-4 rounded-lg border p-4 sm:grid-cols-2">
+              <div className="sm:col-span-2">
+                <div className="text-sm font-medium">Upstream credentials</div>
+                <div className="text-xs text-muted-foreground">Credentials issued by the IPTV provider.</div>
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="upstream-username">Username</Label>
+                <Input id="upstream-username" value={upstreamUsername} onChange={(event) => setUpstreamUsername(event.target.value)} required />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="upstream-password">Password</Label>
+                <Input id="upstream-password" type="password" value={upstreamPassword} onChange={(event) => setUpstreamPassword(event.target.value)} placeholder={editingId ? 'Leave blank to keep current password' : ''} required={!editingId} />
+              </div>
+            </div>
+
+            <div className="grid gap-4 rounded-lg border p-4 sm:grid-cols-2">
+              <div className="sm:col-span-2">
+                <div className="text-sm font-medium">Client credentials</div>
+                <div className="text-xs text-muted-foreground">Credentials your local IPTV clients use against this proxy.</div>
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="local-username">Username</Label>
+                <Input id="local-username" value={localUsername} onChange={(event) => setLocalUsername(event.target.value)} required />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="local-password">Password</Label>
+                <Input id="local-password" type="password" value={localPassword} onChange={(event) => setLocalPassword(event.target.value)} placeholder={editingId ? 'Leave blank to keep current password' : ''} required={!editingId} />
+              </div>
+            </div>
+
+            <div className="grid gap-4 sm:grid-cols-2">
+              <div className="space-y-2">
+                <Label htmlFor="cache-hours">Metadata cache (hours)</Label>
+                <Input id="cache-hours" type="number" min={0} max={24} value={cacheHours} onChange={(event) => setCacheHours(Number(event.target.value))} />
+                <p className="text-xs text-muted-foreground">Set to 0 to disable metadata caching.</p>
+              </div>
+              <div className="space-y-3 rounded-lg border p-4">
+                <label className="flex items-center justify-between gap-3 text-sm">
+                  <span>Enabled</span>
+                  <input type="checkbox" checked={enabled} onChange={(event) => setEnabled(event.target.checked)} className="size-4 accent-current" />
+                </label>
+                <label className="flex items-center justify-between gap-3 text-sm">
+                  <span>Default provider</span>
+                  <input type="checkbox" checked={isDefault} onChange={(event) => setIsDefault(event.target.checked)} className="size-4 accent-current" />
+                </label>
+              </div>
+            </div>
+          </form>
+
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setModalOpen(false)}>Cancel</Button>
+            <Button type="submit" form="provider-form" disabled={saving}>{saving ? 'Saving…' : editingId ? 'Save changes' : 'Add provider'}</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={Boolean(deleteId)} onOpenChange={(open) => !open && setDeleteId(null)}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Delete provider?</DialogTitle>
+            <DialogDescription>
+              {selectedForDelete ? `${selectedForDelete.name} and its route will stop working immediately.` : 'This provider will be removed.'}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setDeleteId(null)}>Cancel</Button>
+            <Button variant="destructive" onClick={() => void deleteProvider()} disabled={deleting}>{deleting ? 'Deleting…' : 'Delete provider'}</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </AppShell>
   );
 }

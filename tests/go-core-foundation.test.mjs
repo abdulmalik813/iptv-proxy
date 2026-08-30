@@ -117,11 +117,11 @@ test('empty Redis cache can be explicitly prewarmed from the admin UI', async ()
   assert.match(cache, /func \(m \*Manager\) Warm/);
   assert.match(main, /\/internal\/cache\/start/);
   assert.match(route, /\/internal\/cache\/start/);
-  assert.match(page, /Start Pull/);
-  assert.match(page, /Cache Activity/);
+  assert.match(page, /Start pull/);
+  assert.match(page, /Recent cache activity/);
 });
 
-test('automatic refresh purge and start pull use immutable zero-downtime generations', async () => {
+test('automatic refresh and manual repull use immutable zero-downtime generations', async () => {
   const cache = compact(await source('internal/cache/manager.go'));
   const page = await source('app/cache/page.tsx');
   assert.match(cache, /func \(m \*Manager\) Purge\(/);
@@ -133,7 +133,9 @@ test('automatic refresh purge and start pull use immutable zero-downtime generat
   assert.match(cache, /PERSIST/);
   assert.match(cache, /retireGeneration/);
   assert.doesNotMatch(cache, /func \(m \*Manager\) RefreshNow/);
-  assert.match(page, /previous generation stayed active until the swap/);
+  assert.match(page, /method: 'DELETE'/);
+  assert.match(page, /without interrupting the active cache/);
+  assert.doesNotMatch(page, />Refresh<\/button>/);
 });
 
 test('non-empty cached catalogs are protected from transient empty replacements', async () => {
