@@ -58,6 +58,16 @@ test('cache duration zero bypasses Redis and calls the provider directly', async
   assert.match(cache, /if ttl\s*<=\s*0\s*\{\s*resp\s*,\s*err\s*:=\s*fetch\(ctx\)/);
 });
 
+test('metadata cache responses have no fixed size limit', async () => {
+  const handler = await source('internal/proxy/handler.go');
+  const cacheProxy = await source('internal/proxy/cache_proxy.go');
+  assert.doesNotMatch(handler, /maxMetadataBytes/);
+  assert.doesNotMatch(cacheProxy, /maxMetadataBytes/);
+  assert.doesNotMatch(cacheProxy, /LimitReader/);
+  assert.doesNotMatch(cacheProxy, /256 MiB cache limit/);
+  assert.match(cacheProxy, /io\.ReadAll\(resp\.Body\)/);
+});
+
 test('persisted Redis cache fetch jobs are rehydrated after every Go restart', async () => {
   const main = await source('cmd/proxy/main.go');
   const rehydrate = await source('internal/proxy/cache_rehydrate.go');
