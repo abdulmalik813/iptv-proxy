@@ -240,12 +240,12 @@ export default function LogsPage() {
       </Card>
 
       <Card>
-        <CardHeader className="flex-row items-start justify-between gap-4">
+        <CardHeader className="gap-4 sm:flex-row sm:items-start sm:justify-between">
           <div>
             <CardTitle>Events</CardTitle>
             <CardDescription>Showing {logs.length} of {totalCount} matching records.</CardDescription>
           </div>
-          <Button variant="ghost" size="sm" onClick={() => setAutoScroll((value) => !value)}>
+          <Button className="w-full sm:w-auto" variant="ghost" size="sm" onClick={() => setAutoScroll((value) => !value)}>
             {autoScroll ? <Pause /> : <Play />}
             Auto-scroll {autoScroll ? 'on' : 'off'}
           </Button>
