@@ -20,12 +20,12 @@ import (
 )
 
 const (
-	refreshThreshold              = 0.30
-	bodyChunkSize                 = 8 * 1024 * 1024
-	fetchTimeout                  = 10 * time.Minute
-	lockTTL                       = 12 * time.Minute
-	stagingGenerationTTL          = 2 * time.Hour
-	retiredGenerationFallbackTTL  = time.Hour
+	refreshThreshold             = 0.30
+	bodyChunkSize                = 8 * 1024 * 1024
+	fetchTimeout                 = 10 * time.Minute
+	lockTTL                      = 12 * time.Minute
+	stagingGenerationTTL         = 2 * time.Hour
+	retiredGenerationFallbackTTL = time.Hour
 )
 
 var (
