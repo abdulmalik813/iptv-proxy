@@ -244,8 +244,12 @@ func (h *Handler) serveCached(w http.ResponseWriter, r *http.Request, p provider
 	} else {
 		w.Header().Set("X-IPTV-Cache", "MISS")
 	}
+	body := response.Body
+	if endpoint == "get.php" {
+		body = h.rewriteM3UPlaylist(p, body)
+	}
 	w.WriteHeader(response.Status)
-	_, _ = w.Write(response.Body)
+	_, _ = w.Write(body)
 }
 
 func (h *Handler) fetchCacheable(ctx context.Context, endpoint string, target *url.URL) (cachepkg.Response, error) {
