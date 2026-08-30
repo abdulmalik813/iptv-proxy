@@ -5,18 +5,18 @@ import (
 	"testing"
 )
 
-func TestCachePolicyOnlyCachesSharedCatalogResponses(t *testing.T) {
+func TestCachePolicyOnlyCachesHeavySharedResponses(t *testing.T) {
 	tests := []struct {
 		name     string
 		endpoint string
 		query    url.Values
 		want     bool
 	}{
-		{name: "live categories", endpoint: "player_api.php", query: url.Values{"action": {"get_live_categories"}}, want: true},
+		{name: "live categories are direct", endpoint: "player_api.php", query: url.Values{"action": {"get_live_categories"}}, want: false},
 		{name: "live streams full list", endpoint: "player_api.php", query: url.Values{"action": {"get_live_streams"}}, want: true},
-		{name: "vod categories", endpoint: "player_api.php", query: url.Values{"action": {"get_vod_categories"}}, want: true},
+		{name: "vod categories are direct", endpoint: "player_api.php", query: url.Values{"action": {"get_vod_categories"}}, want: false},
 		{name: "vod streams full list", endpoint: "player_api.php", query: url.Values{"action": {"get_vod_streams"}}, want: true},
-		{name: "series categories", endpoint: "player_api.php", query: url.Values{"action": {"get_series_categories"}}, want: true},
+		{name: "series categories are direct", endpoint: "player_api.php", query: url.Values{"action": {"get_series_categories"}}, want: false},
 		{name: "series full list", endpoint: "player_api.php", query: url.Values{"action": {"get_series"}}, want: true},
 		{name: "vod detail is direct", endpoint: "player_api.php", query: url.Values{"action": {"get_vod_info"}, "vod_id": {"123"}}, want: false},
 		{name: "series detail is direct", endpoint: "player_api.php", query: url.Values{"action": {"get_series_info"}, "series_id": {"123"}}, want: false},
