@@ -32,7 +32,8 @@ test('Go cache cold-loads provider data and refreshes automatically at 30 percen
   assert.match(cache, /fresh, err := fetch\(ctx\)/);
   assert.match(cache, /time\.AfterFunc/);
   assert.match(cache, /1-refreshThreshold/);
-  assert.doesNotMatch(cache, /Del\(.*key\)/s);
+  assert.match(cache, /m\.put\(refreshCtx, key, ttl, fresh\)/);
+  assert.doesNotMatch(cache, /m\.client\.Del\([^\n]*,\s*key\s*\)/);
 });
 
 test('cache duration zero bypasses Redis and calls the provider directly', async () => {
