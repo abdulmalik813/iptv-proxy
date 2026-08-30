@@ -67,6 +67,50 @@ function baseResult(provider: Awaited<ReturnType<typeof ProviderService.getProvi
   };
 }
 
+function redactUrl(value: string) {
+  try {
+    const url = new URL(value);
+    if (url.searchParams.has('username')) url.searchParams.set('username', '[redacted]');
+    if (url.searchParams.has('password')) url.searchParams.set('password', '[redacted]');
+    return url.toString();
+  } catch {
+    return value;
+  }
+}
+
+function diagnosticHeaders(headers: Headers) {
+  const allowed = [
+    'content-type',
+    'content-length',
+    'server',
+    'date',
+    'location',
+    'via',
+    'cf-ray',
+    'cf-cache-status',
+    'x-cache',
+    'x-powered-by',
+  ];
+  const result: Record<string, string> = {};
+  for (const name of allowed) {
+    const value = headers.get(name);
+    if (value) result[name] = value;
+  }
+  return result;
+}
+
+function responseDiagnostics(response: Response, elapsedMs: number) {
+  return {
+    upstreamStatus: response.status,
+    upstreamStatusText: response.statusText || null,
+    rawContentType: response.headers.get('content-type') || 'text/plain',
+    finalUrl: redactUrl(response.url),
+    requestMethod: 'GET',
+    responseHeaders: diagnosticHeaders(response.headers),
+    elapsedMs,
+  };
+}
+
 export async function POST(req: NextRequest, context: { params: Promise<{ id: string }> }) {
   const requestError = validateMutationRequest(req);
   if (requestError) return NextResponse.json({ success: false, error: requestError }, { status: 403 });
@@ -97,24 +141,23 @@ export async function POST(req: NextRequest, context: { params: Promise<{ id: st
 
     const elapsedMs = Date.now() - startedAt;
     const text = await response.text();
-    const contentType = response.headers.get('content-type') || 'text/plain';
+    const diagnostics = responseDiagnostics(response, elapsedMs);
 
     if (!response.ok) {
       await LogService.warn('provider', 'account-test', `Provider "${provider.name}" returned HTTP ${response.status}.`, {
         provider_id: provider.id,
         elapsed_ms: elapsedMs,
-        content_type: contentType,
+        content_type: diagnostics.rawContentType,
       });
       return NextResponse.json({
         success: false,
         error: `Upstream returned HTTP ${response.status}${response.statusText ? ` ${response.statusText}` : ''}.`,
         data: {
           ...baseResult(provider, elapsedMs),
+          ...diagnostics,
           reachable: true,
           authenticated: false,
           rawResponse: text,
-          rawContentType: contentType,
-          upstreamStatus: response.status,
         },
       }, { status: 502 });
     }
@@ -126,18 +169,17 @@ export async function POST(req: NextRequest, context: { params: Promise<{ id: st
       await LogService.warn('provider', 'account-test', `Provider "${provider.name}" returned a non-JSON response.`, {
         provider_id: provider.id,
         elapsed_ms: elapsedMs,
-        content_type: contentType,
+        content_type: diagnostics.rawContentType,
       });
       return NextResponse.json({
         success: false,
-        error: contentType.toLowerCase().includes('html') ? 'Upstream returned HTML instead of Xtream JSON.' : 'Upstream returned a non-JSON response.',
+        error: diagnostics.rawContentType.toLowerCase().includes('html') ? 'Upstream returned HTML instead of Xtream JSON.' : 'Upstream returned a non-JSON response.',
         data: {
           ...baseResult(provider, elapsedMs),
+          ...diagnostics,
           reachable: true,
           authenticated: false,
           rawResponse: text,
-          rawContentType: contentType,
-          upstreamStatus: response.status,
         },
       }, { status: 502 });
     }
@@ -149,11 +191,10 @@ export async function POST(req: NextRequest, context: { params: Promise<{ id: st
         error: 'Upstream response did not include user_info.',
         data: {
           ...baseResult(provider, elapsedMs),
+          ...diagnostics,
           reachable: true,
           authenticated: false,
           rawResponse: text,
-          rawContentType: contentType,
-          upstreamStatus: response.status,
         },
       }, { status: 502 });
     }
@@ -165,11 +206,10 @@ export async function POST(req: NextRequest, context: { params: Promise<{ id: st
         error: userInfo.message?.trim() || `Xtream authentication failed${userInfo.status ? ` (${userInfo.status})` : ''}.`,
         data: {
           ...baseResult(provider, elapsedMs),
+          ...diagnostics,
           reachable: true,
           authenticated: false,
           rawResponse: text,
-          rawContentType: contentType,
-          upstreamStatus: response.status,
         },
       }, { status: 502 });
     }
@@ -184,6 +224,7 @@ export async function POST(req: NextRequest, context: { params: Promise<{ id: st
       success: true,
       data: {
         ...baseResult(provider, elapsedMs),
+        ...diagnostics,
         reachable: true,
         authenticated: true,
         account: safeAccountInfo(userInfo),
