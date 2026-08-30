@@ -42,6 +42,8 @@ jobs:
           context: .
           file: ./Dockerfile
           push: true
+          build-args: |
+            UI_URL=${{ vars.UI_URL || 'https://iptv.yourwebpage.ca/ui' }}
           tags: |
             ${{ env.IMAGE_NAME }}:latest
             ${{ env.IMAGE_NAME }}:${{ github.sha }}
