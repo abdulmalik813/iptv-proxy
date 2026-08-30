@@ -4,6 +4,7 @@ import React from 'react';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import {
+  Database,
   FlaskConical,
   LayoutDashboard,
   Tv,
@@ -39,6 +40,7 @@ export function Sidebar({ user, onLogout, mobileOpen, setMobileOpen }: SidebarPr
     { name: 'Dashboard', href: '/dashboard', icon: LayoutDashboard },
     { name: 'Providers', href: '/providers', icon: Tv },
     { name: 'Provider Tests', href: '/providers/tests', icon: FlaskConical },
+    { name: 'Cache', href: '/cache', icon: Database },
     { name: 'VPN System', href: '/vpn', icon: Shield },
     { name: 'Live Logs', href: '/logs', icon: ScrollText },
     { name: 'Settings', href: '/settings', icon: Settings },
