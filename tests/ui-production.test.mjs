@@ -107,3 +107,43 @@ test('login UI is concise and contains no internal implementation copy', async (
   assert.doesNotMatch(page, /SQLITE \/ DOCKER WAL/);
   assert.doesNotMatch(page, /INITIALIZING SECURE SESSION/);
 });
+
+test('shared shell supports distinct mobile and desktop navigation layouts', async () => {
+  const shell = await source('components/layout/app-shell.tsx');
+  const sidebar = await source('components/layout/sidebar.tsx');
+  const topbar = await source('components/layout/top-bar.tsx');
+  const pageHeader = await source('components/layout/page-header.tsx');
+
+  assert.match(shell, /p-4 sm:p-6 lg:p-8/);
+  assert.match(sidebar, /hidden h-screen[^\n]*md:block/);
+  assert.match(sidebar, /fixed inset-0 z-50 md:hidden/);
+  assert.match(sidebar, /w-64/);
+  assert.match(topbar, /md:hidden/);
+  assert.match(topbar, /hidden[^\n]*sm:flex/);
+  assert.match(topbar, /hidden sm:inline/);
+  assert.match(pageHeader, /flex flex-col gap-4 sm:flex-row/);
+  assert.match(pageHeader, /flex shrink-0 flex-wrap/);
+});
+
+test('data-heavy pages remain usable on narrow screens and expand on desktop', async () => {
+  const providers = await source('app/providers/page.tsx');
+  const cache = await source('app/cache/page.tsx');
+  const vpn = await source('app/vpn/page.tsx');
+  const logs = await source('app/logs/page.tsx');
+  const dashboard = await source('app/dashboard/page.tsx');
+  const settings = await source('app/settings/page.tsx');
+  const dialog = await source('components/ui/dialog.tsx');
+  const table = await source('components/ui/table.tsx');
+
+  assert.match(table, /overflow-x-auto/);
+  assert.match(providers, /sm:grid-cols-2/);
+  assert.match(cache, /sm:grid-cols-3/);
+  assert.match(vpn, /overflow-x-auto/);
+  assert.match(vpn, /sm:grid-cols-2/);
+  assert.match(logs, /sm:grid-cols-2/);
+  assert.match(dashboard, /sm:grid-cols-2/);
+  assert.match(dashboard, /lg:grid-cols-4/);
+  assert.match(settings, /lg:grid-cols-2/);
+  assert.match(dialog, /w-\[calc\(100%-2rem\)\]/);
+  assert.match(dialog, /sm:max-w-lg/);
+});
