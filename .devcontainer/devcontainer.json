@@ -20,6 +20,7 @@
   "containerEnv": {
     "DATABASE_PATH": "${containerWorkspaceFolder}/data/iptv-proxy.db",
     "UI_URL": "http://localhost:3000/ui",
+    "APP_URL": "http://localhost:8080",
     "GO_PROXY_ADDR": ":8080",
     "COOKIE_SECURE": "false",
     "NEXT_TELEMETRY_DISABLED": "1",
