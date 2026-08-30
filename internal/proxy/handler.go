@@ -16,7 +16,6 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-const maxMetadataBytes = 256 << 20
 const maxHLSPlaylistBytes = 8 << 20
 
 var cacheablePlayerActions = map[string]bool{
