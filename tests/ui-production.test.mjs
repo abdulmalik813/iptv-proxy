@@ -144,6 +144,7 @@ test('data-heavy pages remain usable on narrow screens and expand on desktop', a
   assert.match(dashboard, /sm:grid-cols-2/);
   assert.match(dashboard, /lg:grid-cols-4/);
   assert.match(settings, /lg:grid-cols-2/);
-  assert.match(dialog, /w-\[calc\(100%-2rem\)\]/);
-  assert.match(dialog, /sm:max-w-lg/);
+  assert.match(dialog, /p-4 sm:p-6/);
+  assert.match(dialog, /w-full max-w-lg/);
+  assert.match(dialog, /flex flex-col-reverse gap-2 sm:flex-row/);
 });
