@@ -9,8 +9,8 @@ import (
 
 // Xtream panels commonly expose catch-up in two equivalent URL shapes:
 //
-//   /timeshift/{user}/{pass}/{duration}/{start}/{stream}.{ext}
-//   /streaming/timeshift.php?username=...&password=...&stream=...&start=...&duration=...
+//	/timeshift/{user}/{pass}/{duration}/{start}/{stream}.{ext}
+//	/streaming/timeshift.php?username=...&password=...&stream=...&start=...&duration=...
 //
 // The proxy accepts and forwards both. The path form is normally preferable for
 // MPEG-TS archives because it is a straight finite recording response, while the
