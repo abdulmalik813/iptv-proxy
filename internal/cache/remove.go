@@ -6,8 +6,10 @@ import (
 	"strings"
 )
 
-// Remove permanently removes one metadata cache entry and its active body
-// generation. It is intended for cache-policy cleanup, not normal refreshes.
+// Remove permanently removes one metadata cache entry. If a request is still
+// serving the active generation, the manifest is removed immediately so no new
+// readers can acquire it, while the old body is retired after its final reader
+// releases the generation.
 func (m *Manager) Remove(ctx context.Context, key string) error {
 	if !strings.HasPrefix(key, "iptv:cache:") {
 		return errors.New("invalid cache key")
@@ -18,7 +20,7 @@ func (m *Manager) Remove(ctx context.Context, key string) error {
 		return err
 	}
 	if found && currentManifest.Generation != "" && currentManifest.ChunkCount > 0 {
-		m.cleanupGeneration(ctx, key, currentManifest.Generation, currentManifest.ChunkCount)
+		m.retireGeneration(ctx, key, currentManifest.Generation, currentManifest.ChunkCount, currentManifest.Descriptor)
 	}
 
 	m.mu.Lock()
