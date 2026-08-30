@@ -25,7 +25,7 @@ const (
 	fetchTimeout           = 10 * time.Minute
 	lockTTL                = 12 * time.Minute
 	stagingGenerationTTL   = 2 * time.Hour
-	retiredGenerationGrace = 30 * time.Minute
+	retiredGenerationGrace = 30 * time.Second
 )
 
 var (
