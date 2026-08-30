@@ -40,3 +40,15 @@ if old in m3u:
 elif "maxMetadataBytes" in m3u or "bufio.NewScanner" in m3u:
     raise RuntimeError("M3U scanner block changed unexpectedly")
 m3u_path.write_text(m3u)
+
+# jsonItemCount now returns both the count and whether the response is a JSON
+# array. Verify both in the provider metadata regression test.
+direct_path = Path("internal/proxy/direct_test.go")
+direct = direct_path.read_text()
+old_count = '''\tif got := jsonItemCount("player_api.php", response.Body); got != 1 {\n\t\tt.Fatalf("items=%d", got)\n\t}\n'''
+new_count = '''\tif got, known := jsonItemCount("player_api.php", response.Body); !known || got != 1 {\n\t\tt.Fatalf("items=%d known=%v", got, known)\n\t}\n'''
+if old_count in direct:
+    direct = direct.replace(old_count, new_count, 1)
+elif 'got, known := jsonItemCount("player_api.php", response.Body)' not in direct:
+    raise RuntimeError("jsonItemCount regression assertion changed unexpectedly")
+direct_path.write_text(direct)
