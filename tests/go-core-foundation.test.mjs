@@ -110,7 +110,7 @@ test('persisted cache descriptors rehydrate refresh jobs and safely migrate lega
   assert.match(migrate, /deleteDuplicate/);
 });
 
-test('empty Redis cache can be explicitly prewarmed from the admin UI', async () => {
+test('refresh all creates missing heavy caches and replaces existing ones', async () => {
   const warm = await source('internal/proxy/cache_warm.go');
   const cache = await source('internal/cache/manager.go');
   const main = await source('cmd/proxy/main.go');
@@ -124,25 +124,28 @@ test('empty Redis cache can be explicitly prewarmed from the admin UI', async ()
   assert.match(cache, /func \(m \*Manager\) Warm/);
   assert.match(main, /\/internal\/cache\/start/);
   assert.match(route, /\/internal\/cache\/start/);
-  assert.match(page, /Start pull/);
+  assert.match(page, /Refresh all cache/);
+  assert.doesNotMatch(page, /Start pull/);
+  assert.doesNotMatch(page, /Repull all/);
   assert.match(page, /Recent cache activity/);
 });
 
-test('automatic refresh and manual repull use immutable zero-downtime generations', async () => {
+test('automatic and individual refresh use immutable zero-downtime generations', async () => {
   const cache = compact(await source('internal/cache/manager.go'));
   const page = await source('app/cache/page.tsx');
+  const route = await source('app/api/system/cache/route.ts');
   assert.match(cache, /func \(m \*Manager\) Purge\(/);
   assert.match(cache, /return m\.replaceNow\(ctx, key, "purge"\)/);
   assert.match(cache, /replaceWithSpec\(ctx, spec, "refresh"\)/);
   assert.match(cache, /stagingGenerationTTL/);
-  assert.match(cache, /retiredGenerationGrace/);
+  assert.match(cache, /retiredGenerationGrace\s*=\s*30 \* time\.Second/);
   assert.match(cache, /publishGenerationScript/);
   assert.match(cache, /PERSIST/);
   assert.match(cache, /retireGeneration/);
   assert.doesNotMatch(cache, /func \(m \*Manager\) RefreshNow/);
   assert.match(page, /method: 'DELETE'/);
-  assert.match(page, /without interrupting the active cache/);
-  assert.doesNotMatch(page, />Refresh<\/button>/);
+  assert.match(page, /Fresh provider data was validated and published for this cache entry/);
+  assert.match(route, /Cache key is required for a single-entry refresh/);
 });
 
 test('non-empty cached catalogs are protected from transient empty replacements', async () => {
