@@ -152,28 +152,6 @@ func main() {
 			methodNotAllowed(w, http.MethodGet+", "+http.MethodDelete)
 		}
 	})
-	mux.HandleFunc("/internal/cache/refresh", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			methodNotAllowed(w, http.MethodPost)
-			return
-		}
-		if !validInternalToken(r, internalToken) {
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
-			return
-		}
-		key := strings.TrimSpace(r.URL.Query().Get("key"))
-		if key == "" {
-			writeJSON(w, http.StatusBadRequest, map[string]any{"success": false, "error": "key is required"})
-			return
-		}
-		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Minute)
-		defer cancel()
-		if err := cacheManager.RefreshNow(ctx, key); err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]any{"success": false, "error": err.Error()})
-			return
-		}
-		writeJSON(w, http.StatusOK, map[string]any{"success": true, "replaced": 1})
-	})
 	mux.HandleFunc("/internal/cache/start", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			methodNotAllowed(w, http.MethodPost)

@@ -50,10 +50,10 @@ test('cache manager has one replacement lifecycle and fail-closed cold misses', 
   const cache = compact(await source('internal/cache/manager.go'));
   assert.match(cache, /refreshThreshold = 0\.30/);
   assert.match(cache, /ErrCacheUnavailable/);
-  assert.match(cache, /m\.refillMissing\(spec\)/);
+  assert.match(cache, /m\.refillMissing\(activeSpec\)/);
   assert.match(cache, /return Response\{\}, false, ErrCacheUnavailable/);
   assert.match(cache, /replaceWithSpec/);
-  assert.match(cache, /RefreshNow/);
+  assert.doesNotMatch(cache, /RefreshNow/);
   assert.match(cache, /Purge/);
   assert.match(cache, /Warm/);
   assert.match(cache, /lockTTL\s*=\s*12 \* time\.Minute/);
@@ -77,7 +77,7 @@ test('metadata cache has no fixed response-size ceiling and uses chunked generat
   assert.match(cache, /writeGeneration/);
   assert.match(cache, /generation/);
   assert.match(cache, /chunk_count/);
-  assert.match(cache, /HStrLen/);
+  assert.match(cache, /HSTRLEN/);
 });
 
 test('canonical cache descriptors remove duplicate endpoint keys and credentials', async () => {
@@ -121,16 +121,18 @@ test('empty Redis cache can be explicitly prewarmed from the admin UI', async ()
   assert.match(page, /Cache Activity/);
 });
 
-test('refresh purge and start pull use safe generation publication', async () => {
+test('automatic refresh purge and start pull use immutable zero-downtime generations', async () => {
   const cache = compact(await source('internal/cache/manager.go'));
   const page = await source('app/cache/page.tsx');
   assert.match(cache, /func \(m \*Manager\) Purge\(/);
   assert.match(cache, /return m\.replaceNow\(ctx, key, "purge"\)/);
-  assert.match(cache, /func \(m \*Manager\) RefreshNow/);
-  assert.match(cache, /return m\.replaceNow\(ctx, key, "refresh"\)/);
-  assert.match(cache, /writeGeneration/);
-  assert.match(cache, /TxPipelined/);
-  assert.match(cache, /cleanupGeneration/);
+  assert.match(cache, /replaceWithSpec\(ctx, spec, "refresh"\)/);
+  assert.match(cache, /stagingGenerationTTL/);
+  assert.match(cache, /retiredGenerationGrace/);
+  assert.match(cache, /publishGenerationScript/);
+  assert.match(cache, /PERSIST/);
+  assert.match(cache, /retireGeneration/);
+  assert.doesNotMatch(cache, /func \(m \*Manager\) RefreshNow/);
   assert.match(page, /previous generation stayed active until the swap/);
 });
 

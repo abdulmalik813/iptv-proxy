@@ -99,11 +99,7 @@ func TestCacheScenarioMatrixRunsAtLeast100Scenarios(t *testing.T) {
 						t.Fatalf("unexpected cached response: %+v", got)
 					}
 
-					if scenario%2 == 0 {
-						err = manager.RefreshNow(context.Background(), spec.normalized().Key)
-					} else {
-						err = manager.Purge(context.Background(), spec.normalized().Key)
-					}
+					err = manager.Purge(context.Background(), spec.normalized().Key)
 					if err != nil {
 						t.Fatal(err)
 					}
@@ -210,7 +206,7 @@ func TestProviderFailurePreservesActiveGeneration(t *testing.T) {
 		t.Fatal(err)
 	}
 	fail.Store(true)
-	if err := manager.RefreshNow(context.Background(), spec.normalized().Key); err == nil {
+	if err := manager.Purge(context.Background(), spec.normalized().Key); err == nil {
 		t.Fatal("expected provider failure")
 	}
 	response, _, err := manager.GetOrFetch(context.Background(), spec)
@@ -259,7 +255,10 @@ func TestConcurrentReplacementUsesSingleLockOwner(t *testing.T) {
 	blocking := atomic.Bool{}
 	spec := testSpec("lock", "get_live_streams", "", func(ctx context.Context) (Response, error) {
 		if blocking.Load() {
-			select { case started <- struct{}{}: default: }
+			select {
+			case started <- struct{}{}:
+			default:
+			}
 			select {
 			case <-block:
 			case <-ctx.Done():
@@ -279,7 +278,7 @@ func TestConcurrentReplacementUsesSingleLockOwner(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("first replacement did not start")
 	}
-	if err := manager.RefreshNow(context.Background(), spec.normalized().Key); !errors.Is(err, ErrReplacementInProgress) {
+	if err := manager.Purge(context.Background(), spec.normalized().Key); !errors.Is(err, ErrReplacementInProgress) {
 		t.Fatalf("expected lock contention, got %v", err)
 	}
 	close(block)
@@ -351,5 +350,98 @@ func TestCacheLifecycleEventsAreEmitted(t *testing.T) {
 	}
 	if eventCount.Load() < 2 {
 		t.Fatalf("expected start and published lifecycle events, got %d", eventCount.Load())
+	}
+}
+
+func TestPublishedGenerationSwitchKeepsPreviousGenerationDuringGrace(t *testing.T) {
+	client := testRedis(t)
+	manager := NewManager(client)
+	defer stopManager(manager)
+	ctx := context.Background()
+
+	var version atomic.Int32
+	version.Store(1)
+	body1 := bytes.Repeat([]byte("old-cache-"), bodyChunkSize/10+2)
+	body2 := bytes.Repeat([]byte("new-cache-"), bodyChunkSize/10+2)
+	spec := testSpec("generation-swap", "get_vod_streams", "", func(context.Context) (Response, error) {
+		if version.Load() == 1 {
+			return Response{Status: 200, Body: body1, ItemCount: 1, ItemCountKnown: true}, nil
+		}
+		return Response{Status: 200, Body: body2, ItemCount: 1, ItemCountKnown: true}, nil
+	})
+	if err := manager.Warm(ctx, spec); err != nil {
+		t.Fatal(err)
+	}
+	key := spec.normalized().Key
+	oldManifest, found, err := manager.loadManifest(ctx, key)
+	if err != nil || !found || oldManifest.Generation == "" {
+		t.Fatalf("old generation unavailable: found=%v generation=%q err=%v", found, oldManifest.Generation, err)
+	}
+	oldChunk := bodyKey(key, oldManifest.Generation, 0)
+	if ttl := client.TTL(ctx, oldChunk).Val(); ttl != -1 {
+		t.Fatalf("active generation must be persistent, TTL=%v", ttl)
+	}
+
+	version.Store(2)
+	if err := manager.Purge(ctx, key); err != nil {
+		t.Fatal(err)
+	}
+	newManifest, found, err := manager.loadManifest(ctx, key)
+	if err != nil || !found || newManifest.Generation == oldManifest.Generation {
+		t.Fatalf("generation pointer did not switch: old=%q new=%q found=%v err=%v", oldManifest.Generation, newManifest.Generation, found, err)
+	}
+	response, hit, err := manager.GetOrFetch(ctx, spec)
+	if err != nil || !hit || !bytes.Equal(response.Body, body2) {
+		t.Fatalf("new generation is not active: hit=%v len=%d err=%v", hit, len(response.Body), err)
+	}
+	if exists := client.Exists(ctx, oldChunk).Val(); exists != 1 {
+		t.Fatal("previous generation was deleted immediately after pointer switch")
+	}
+	if ttl := client.TTL(ctx, oldChunk).Val(); ttl <= 0 || ttl > retiredGenerationGrace {
+		t.Fatalf("previous generation grace TTL=%v", ttl)
+	}
+}
+
+func TestStagedGenerationExpiresUnlessPublished(t *testing.T) {
+	client := testRedis(t)
+	manager := NewManager(client)
+	defer stopManager(manager)
+	ctx := context.Background()
+	key := testSpec("staging", "get_series", "", func(context.Context) (Response, error) { return Response{}, nil }).normalized().Key
+	generation := newID()
+	body := bytes.Repeat([]byte("staged"), bodyChunkSize/6+2)
+	chunks, err := manager.writeGeneration(ctx, key, generation, body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if chunks < 1 {
+		t.Fatal("expected staged chunks")
+	}
+	for i := 0; i < chunks; i++ {
+		ttl := client.TTL(ctx, bodyKey(key, generation, i)).Val()
+		if ttl <= 0 || ttl > stagingGenerationTTL {
+			t.Fatalf("staged chunk %d has unsafe TTL %v", i, ttl)
+		}
+	}
+}
+
+func TestLockReleaseDoesNotDeleteAnotherOwnersLock(t *testing.T) {
+	client := testRedis(t)
+	manager := NewManager(client)
+	defer stopManager(manager)
+	ctx := context.Background()
+	spec := testSpec("lock-owner", "get_live_streams", "", func(context.Context) (Response, error) {
+		return Response{Status: 200, Body: []byte("ok")}, nil
+	}).normalized()
+	locked, err := manager.acquire(ctx, spec, "test", "owner-a")
+	if err != nil || !locked {
+		t.Fatalf("owner-a failed to acquire lock: locked=%v err=%v", locked, err)
+	}
+	if err := client.Set(ctx, lockKey(spec.Key), "owner-b", lockTTL).Err(); err != nil {
+		t.Fatal(err)
+	}
+	manager.release(spec.Key, "owner-a")
+	if owner := client.Get(ctx, lockKey(spec.Key)).Val(); owner != "owner-b" {
+		t.Fatalf("stale owner removed a newer lock: owner=%q", owner)
 	}
 }

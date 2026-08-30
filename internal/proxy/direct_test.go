@@ -92,10 +92,10 @@ func TestServeDirectPreservesRangeAndPartialContent(t *testing.T) {
 func TestCachedVodMetadataPreservesClientHeaders(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if got := r.UserAgent(); got != "OwnTV-Test/1.0" {
-			t.Fatalf("User-Agent=%q", got)
+			t.Errorf("User-Agent=%q", got)
 		}
 		if got := r.Header.Get("Accept"); got != "application/json" {
-			t.Fatalf("Accept=%q", got)
+			t.Errorf("Accept=%q", got)
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`[ {"stream_id":123,"name":"Movie"} ]`))
@@ -114,7 +114,7 @@ func TestCachedVodMetadataPreservesClientHeaders(t *testing.T) {
 	if response.Status != http.StatusOK {
 		t.Fatalf("status=%d", response.Status)
 	}
-	if got := jsonItemCount("player_api.php", response.Body); got != 1 {
-		t.Fatalf("items=%d", got)
+	if got, known := jsonItemCount("player_api.php", response.Body); !known || got != 1 {
+		t.Fatalf("items=%d known=%v", got, known)
 	}
 }
