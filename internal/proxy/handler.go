@@ -10,6 +10,7 @@ import (
 
 	cachepkg "github.com/abdulmalik813/iptv-proxy/internal/cache"
 	proxylog "github.com/abdulmalik813/iptv-proxy/internal/logging"
+	"github.com/abdulmalik813/iptv-proxy/internal/provider"
 	"github.com/abdulmalik813/iptv-proxy/internal/routing"
 	"github.com/abdulmalik813/iptv-proxy/internal/stream"
 	"github.com/redis/go-redis/v9"
@@ -121,7 +122,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	upstreamURL, endpoint, err := buildUpstreamURL(resolved, r)
+	upstreamURL, endpoint, clientUser, err := buildUpstreamURL(resolved, r)
 	if err != nil {
 		h.trace(ctx, "warning", "request.rewrite", "IPTV request validation or rewrite failed", map[string]any{
 			"providerId":   resolved.Provider.ID,
@@ -132,11 +133,14 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(recorder, err.Error(), http.StatusUnauthorized)
 		return
 	}
-	h.trace(ctx, "debug", "request.rewrite", "Request rewritten for upstream provider", providerMeta(resolved.Provider, endpoint, upstreamURL))
+	meta := providerMeta(resolved.Provider, endpoint, upstreamURL)
+	meta["clientUsername"] = clientUser.Username
+	meta["clientUserId"] = clientUser.ID
+	h.trace(ctx, "debug", "request.rewrite", "Request authenticated and rewritten for upstream provider", meta)
 
 	if isCacheable(endpoint, r.URL.Query()) {
 		h.trace(ctx, "debug", "cache.route", "Request routed through metadata cache", providerMeta(resolved.Provider, endpoint, upstreamURL))
-		h.serveCached(recorder, r, resolved.Provider, endpoint, upstreamURL)
+		h.serveCached(recorder, r, resolved.Provider, clientUser, endpoint, upstreamURL)
 		return
 	}
 	if shouldMultiplexLive(r, endpoint, upstreamURL) {
@@ -148,11 +152,11 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.serveDirect(recorder, r, resolved.Provider, upstreamURL)
 }
 
-func buildUpstreamURL(resolved routing.Resolved, r *http.Request) (*url.URL, string, error) {
+func buildUpstreamURL(resolved routing.Resolved, r *http.Request) (*url.URL, string, provider.User, error) {
 	p := resolved.Provider
 	base, err := url.Parse(strings.TrimSuffix(p.Host, "/"))
 	if err != nil {
-		return nil, "", err
+		return nil, "", provider.User{}, err
 	}
 	remaining := resolved.RemainingPath
 	parts := strings.Split(strings.TrimPrefix(remaining, "/"), "/")
@@ -161,24 +165,34 @@ func buildUpstreamURL(resolved routing.Resolved, r *http.Request) (*url.URL, str
 		endpoint = parts[0]
 	}
 	if !supportedEndpoints[endpoint] {
-		return nil, endpoint, errors.New("unsupported IPTV endpoint")
+		return nil, endpoint, provider.User{}, errors.New("unsupported IPTV endpoint")
 	}
 
 	q := r.URL.Query()
+	clientUser := provider.User{}
+	authenticate := func(username, password string) error {
+		user, ok := p.Authenticate(username, password)
+		if !ok {
+			return errors.New("invalid IPTV credentials")
+		}
+		clientUser = user
+		return nil
+	}
+
 	switch endpoint {
 	case "player_api.php", "get.php", "xmltv.php":
-		if q.Get("username") != p.LocalUsername || q.Get("password") != p.LocalPassword {
-			return nil, endpoint, errors.New("invalid IPTV credentials")
+		if err := authenticate(q.Get("username"), q.Get("password")); err != nil {
+			return nil, endpoint, provider.User{}, err
 		}
 		q.Set("username", p.UpstreamUsername)
 		q.Set("password", p.UpstreamPassword)
 	case "live", "movie", "series":
 		segments := strings.Split(strings.TrimPrefix(remaining, "/"), "/")
 		if len(segments) < 4 {
-			return nil, endpoint, errors.New("invalid IPTV stream path")
+			return nil, endpoint, provider.User{}, errors.New("invalid IPTV stream path")
 		}
-		if segments[1] != p.LocalUsername || segments[2] != p.LocalPassword {
-			return nil, endpoint, errors.New("invalid IPTV credentials")
+		if err := authenticate(segments[1], segments[2]); err != nil {
+			return nil, endpoint, provider.User{}, err
 		}
 		segments[1] = p.UpstreamUsername
 		segments[2] = p.UpstreamPassword
@@ -186,20 +200,20 @@ func buildUpstreamURL(resolved routing.Resolved, r *http.Request) (*url.URL, str
 	case "timeshift":
 		segments := strings.Split(strings.TrimPrefix(remaining, "/"), "/")
 		if len(segments) < 6 {
-			return nil, endpoint, errors.New("invalid IPTV timeshift path")
+			return nil, endpoint, provider.User{}, errors.New("invalid IPTV timeshift path")
 		}
-		if segments[1] != p.LocalUsername || segments[2] != p.LocalPassword {
-			return nil, endpoint, errors.New("invalid IPTV credentials")
+		if err := authenticate(segments[1], segments[2]); err != nil {
+			return nil, endpoint, provider.User{}, err
 		}
 		segments[1] = p.UpstreamUsername
 		segments[2] = p.UpstreamPassword
 		remaining = "/" + strings.Join(segments, "/")
 	case "streaming":
 		if len(parts) < 2 || !strings.EqualFold(parts[1], "timeshift.php") {
-			return nil, endpoint, errors.New("unsupported streaming endpoint")
+			return nil, endpoint, provider.User{}, errors.New("unsupported streaming endpoint")
 		}
-		if q.Get("username") != p.LocalUsername || q.Get("password") != p.LocalPassword {
-			return nil, endpoint, errors.New("invalid IPTV credentials")
+		if err := authenticate(q.Get("username"), q.Get("password")); err != nil {
+			return nil, endpoint, provider.User{}, err
 		}
 		q.Set("username", p.UpstreamUsername)
 		q.Set("password", p.UpstreamPassword)
@@ -207,7 +221,7 @@ func buildUpstreamURL(resolved routing.Resolved, r *http.Request) (*url.URL, str
 
 	base.Path = strings.TrimSuffix(base.Path, "/") + remaining
 	base.RawQuery = q.Encode()
-	return base, endpoint, nil
+	return base, endpoint, clientUser, nil
 }
 
 func isCacheable(endpoint string, q url.Values) bool {
