@@ -3,7 +3,10 @@
 FROM node:22-bookworm-slim AS base
 WORKDIR /app
 ENV NEXT_TELEMETRY_DISABLED=1
-RUN npm install --global pnpm@11.24.0
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    golang-go \
+  && rm -rf /var/lib/apt/lists/* \
+  && npm install --global pnpm@11.24.0
 
 FROM base AS deps
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -19,9 +22,12 @@ FROM base AS builder
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
-RUN mkdir -p public
+RUN mkdir -p public /app/bin
+ARG UI_URL=http://localhost:3000/ui
+ENV UI_URL=${UI_URL}
 ENV NODE_ENV=production
 RUN pnpm build
+RUN go build -o /app/bin/iptv-go-proxy ./cmd/proxy
 
 FROM node:22-bookworm-slim AS runner
 WORKDIR /app
@@ -31,6 +37,8 @@ ENV NEXT_TELEMETRY_DISABLED=1
 ENV PORT=3000
 ENV HOSTNAME=0.0.0.0
 ENV DATABASE_PATH=/data/iptv-proxy.db
+ENV UI_URL=http://localhost:3000/ui
+ENV GO_PROXY_ADDR=:8080
 ENV VPN_BYPASS_TCP_PORTS=3000,8080
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -38,6 +46,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     gnupg \
     dumb-init \
+    golang-go \
     wireguard-tools \
     openvpn \
     iptables \
@@ -67,13 +76,14 @@ RUN mkdir -p \
 COPY --from=builder /app/.next/standalone ./
 COPY --from=builder /app/.next/static ./.next/static
 COPY --from=builder /app/public ./public
+COPY --from=builder /app/bin/iptv-go-proxy /usr/local/bin/iptv-go-proxy
 COPY docker/entrypoint.sh /usr/local/bin/iptv-proxy-entrypoint
-RUN chmod +x /usr/local/bin/iptv-proxy-entrypoint
+RUN chmod +x /usr/local/bin/iptv-proxy-entrypoint /usr/local/bin/iptv-go-proxy
 
-EXPOSE 3000
+EXPOSE 3000 8080
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
-  CMD curl -fsS http://127.0.0.1:3000/api/health >/dev/null || exit 1
+  CMD curl -fsS http://127.0.0.1:3000/ui/api/health >/dev/null || exit 1
 
 ENTRYPOINT ["/usr/bin/dumb-init", "--"]
 CMD ["/usr/local/bin/iptv-proxy-entrypoint"]
