@@ -6,6 +6,7 @@ on:
       - main
     paths:
       - scripts/finalize_cache.py
+      - scripts/finalize_cache_followup.py
       - .github/workflows/cache-finalize.yml
   workflow_dispatch:
 
@@ -57,6 +58,7 @@ jobs:
       - name: Apply reviewed finalization
         run: |
           python3 scripts/finalize_cache.py
+          python3 scripts/finalize_cache_followup.py
           gofmt -w cmd internal
 
       - name: Install dependencies
@@ -93,7 +95,7 @@ jobs:
 
       - name: Commit finalized architecture
         run: |
-          rm .github/workflows/cache-finalize.yml scripts/finalize_cache.py
+          rm .github/workflows/cache-finalize.yml scripts/finalize_cache.py scripts/finalize_cache_followup.py
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
