@@ -65,6 +65,8 @@ const groups: Array<{ value: LogGroup; label: string }> = [
   { value: 'system', label: 'System' },
 ];
 
+const requestRoutingCategories = new Set(['direct.route', 'cache.route', 'cache.result', 'live.route', 'hls.token']);
+
 function levelVariant(level: LogLevel): 'secondary' | 'warning' | 'destructive' | 'outline' {
   if (level === 'error') return 'destructive';
   if (level === 'warning') return 'warning';
@@ -94,7 +96,7 @@ function prettyMetadata(value: string | null) {
 function matchesGroup(log: LogItem, group: LogGroup) {
   if (group === 'ALL') return true;
   if (group === 'traffic') {
-    return log.category.startsWith('request.') || log.category.startsWith('upstream.') || log.category.startsWith('route.') || log.category === 'direct.route';
+    return log.category.startsWith('request.') || log.category.startsWith('upstream.') || log.category.startsWith('route.') || requestRoutingCategories.has(log.category);
   }
   if (group === 'cache') return log.category.startsWith('cache.');
   if (group === 'streams') return log.category.startsWith('live.') || log.category.startsWith('hls.') || log.category.startsWith('stream.');
@@ -142,7 +144,12 @@ function proxyTraffic(log: LogItem, metadata: Record<string, unknown> | null) {
   else if (log.category === 'upstream.request') step = 'PROXY → PROVIDER';
   else if (log.category === 'upstream.response') step = 'PROVIDER → PROXY';
   else if (log.category === 'upstream.error') step = 'PROVIDER ERROR';
-  else if (log.category.startsWith('route.') || log.category === 'request.rewrite' || log.category === 'direct.route') step = 'ROUTING';
+  else if (log.category === 'cache.route') step = 'CACHE ROUTE';
+  else if (log.category === 'cache.result') step = 'CACHE RESPONSE';
+  else if (log.category === 'live.route') step = 'LIVE ROUTE';
+  else if (log.category === 'hls.token') step = 'HLS CHILD';
+  else if (log.category === 'direct.route') step = 'DIRECT ROUTE';
+  else if (log.category.startsWith('route.') || log.category === 'request.rewrite') step = 'ROUTING';
 
   if (!direction && !url && !method && !status && !traceId && !step) return null;
   return { direction, url, method, status, traceId, elapsedMs, bytes, step };
@@ -205,19 +212,17 @@ export default function LogsPage() {
     eventSource.addEventListener('log', (event) => {
       try {
         const newLog = JSON.parse(event.data) as LogItem;
-        setLogs((current) => {
-          if (levelFilter !== 'ALL' && newLog.level !== levelFilter) return current;
-          if (sourceFilter !== 'ALL' && newLog.source !== sourceFilter) return current;
-          if (!matchesGroup(newLog, groupFilter)) return current;
-          if (searchQuery) {
-            const query = searchQuery.toLowerCase();
-            const searchable = `${newLog.message} ${newLog.source} ${newLog.category} ${newLog.metadata_json || ''}`.toLowerCase();
-            if (!searchable.includes(query)) return current;
-          }
-          return sortOrder === 'DESC'
-            ? [newLog, ...current.slice(0, 499)]
-            : [...current.slice(-499), newLog];
-        });
+        if (levelFilter !== 'ALL' && newLog.level !== levelFilter) return;
+        if (sourceFilter !== 'ALL' && newLog.source !== sourceFilter) return;
+        if (!matchesGroup(newLog, groupFilter)) return;
+        if (searchQuery) {
+          const query = searchQuery.toLowerCase();
+          const searchable = `${newLog.message} ${newLog.source} ${newLog.category} ${newLog.metadata_json || ''}`.toLowerCase();
+          if (!searchable.includes(query)) return;
+        }
+        setLogs((current) => sortOrder === 'DESC'
+          ? [newLog, ...current.slice(0, 499)]
+          : [...current.slice(-499), newLog]);
         setTotalCount((current) => current + 1);
       } catch {
         return;
@@ -343,7 +348,7 @@ export default function LogsPage() {
         <CardHeader className="gap-4 sm:flex-row sm:items-start sm:justify-between">
           <div>
             <CardTitle>Unified console</CardTitle>
-            <CardDescription>Showing {logs.length} of {totalCount} matching records. Trace IDs link the client request, provider request, provider response and final client response.</CardDescription>
+            <CardDescription>Showing {logs.length} of {totalCount} matching records. Trace IDs link the client request, routing/cache decision, provider request, provider response and final client response.</CardDescription>
           </div>
           <Button className="w-full sm:w-auto" variant="ghost" size="sm" onClick={() => setAutoScroll((value) => !value)}>
             {autoScroll ? <Pause /> : <Play />}
