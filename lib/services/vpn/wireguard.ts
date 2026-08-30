@@ -11,6 +11,8 @@ const execFileAsync = promisify(execFile);
 const RUNTIME_DIR = '/tmp/vpn/wireguard';
 const WG_INTERFACE = 'wg0';
 const CONFIG_PATH = path.join(RUNTIME_DIR, `${WG_INTERFACE}.conf`);
+const WG_SETCONF_PATH = path.join(RUNTIME_DIR, `${WG_INTERFACE}.setconf`);
+const ENDPOINT_ROUTE_PATH = path.join(RUNTIME_DIR, `${WG_INTERFACE}.endpoint-route`);
 const FORBIDDEN_DIRECTIVES = new Set(['preup', 'postup', 'predown', 'postdown']);
 
 export interface WireguardValidationResult {
@@ -21,9 +23,21 @@ export interface WireguardValidationResult {
   hasPrivateKey: boolean;
 }
 
+type RuntimeWireguardConfig = {
+  setconf: string;
+  addresses: string[];
+  mtu: number;
+  endpointHost: string | null;
+  allowedIps: string[];
+};
+
 function directiveName(line: string): string | null {
   const match = line.match(/^([A-Za-z][A-Za-z0-9]*)\s*=/);
   return match?.[1]?.toLowerCase() || null;
+}
+
+function directiveValue(line: string): string {
+  return line.split('=').slice(1).join('=').trim();
 }
 
 export function validateWireguardConfig(rawConfig: string): WireguardValidationResult {
@@ -54,8 +68,8 @@ export function validateWireguardConfig(rawConfig: string): WireguardValidationR
     }
 
     if (directive === 'privatekey') hasPrivateKey = true;
-    if (directive === 'address') interfaceAddress = line.split('=').slice(1).join('=').trim();
-    if (directive === 'endpoint') endpoint = line.split('=').slice(1).join('=').trim();
+    if (directive === 'address') interfaceAddress = directiveValue(line);
+    if (directive === 'endpoint') endpoint = directiveValue(line);
   }
 
   if (!hasInterface) {
@@ -71,17 +85,143 @@ export function validateWireguardConfig(rawConfig: string): WireguardValidationR
   return { valid: true, interfaceAddress, endpoint, hasPrivateKey };
 }
 
-function runtimeConfig(rawConfig: string): string {
-  return rawConfig
-    .split(/\r?\n/)
-    .filter((line) => {
-      const directive = directiveName(line.trim());
-      // DNS invokes resolvconf and can replace Docker DNS. Table is normalized so
-      // wg-quick uses its predictable policy-routing behavior.
-      return directive !== 'dns' && directive !== 'table' && !FORBIDDEN_DIRECTIVES.has(directive || '');
-    })
-    .join('\n')
-    .trim();
+function buildRuntimeConfig(rawConfig: string): RuntimeWireguardConfig {
+  const addresses: string[] = [];
+  const allowedIps: string[] = [];
+  let mtu = 1420;
+  let endpointHost: string | null = null;
+  const setconfLines: string[] = [];
+
+  for (const originalLine of rawConfig.split(/\r?\n/)) {
+    const line = originalLine.trim();
+    const directive = directiveName(line);
+
+    if (!line || line.startsWith('#')) {
+      setconfLines.push(originalLine);
+      continue;
+    }
+
+    if (directive && FORBIDDEN_DIRECTIVES.has(directive)) continue;
+
+    if (directive === 'address') {
+      addresses.push(...directiveValue(line).split(',').map((value) => value.trim()).filter(Boolean));
+      continue;
+    }
+    if (directive === 'dns' || directive === 'table') continue;
+    if (directive === 'mtu') {
+      const parsed = Number.parseInt(directiveValue(line), 10);
+      if (Number.isInteger(parsed) && parsed >= 576 && parsed <= 9000) mtu = parsed;
+      continue;
+    }
+    if (directive === 'endpoint') {
+      const endpoint = directiveValue(line);
+      const bracketed = endpoint.match(/^\[([^\]]+)\]:(\d+)$/);
+      const regular = endpoint.match(/^(.+):(\d+)$/);
+      endpointHost = bracketed?.[1] || regular?.[1] || endpoint;
+      setconfLines.push(originalLine);
+      continue;
+    }
+    if (directive === 'allowedips') {
+      allowedIps.push(...directiveValue(line).split(',').map((value) => value.trim()).filter(Boolean));
+      setconfLines.push(originalLine);
+      continue;
+    }
+
+    setconfLines.push(originalLine);
+  }
+
+  if (addresses.length === 0) throw new Error('WireGuard configuration must include an Interface Address.');
+  if (allowedIps.length === 0) throw new Error('WireGuard configuration must include Peer AllowedIPs.');
+
+  return {
+    setconf: setconfLines.join('\n').trim(),
+    addresses,
+    mtu,
+    endpointHost,
+    allowedIps,
+  };
+}
+
+async function run(command: string, args: string[], timeout = 8_000): Promise<string> {
+  const { stdout } = await execFileAsync(command, args, { timeout });
+  return stdout.trim();
+}
+
+async function resolveEndpointIpv4(host: string): Promise<string | null> {
+  if (/^\d{1,3}(?:\.\d{1,3}){3}$/.test(host)) return host;
+  try {
+    const output = await run('getent', ['ahostsv4', host], 5_000);
+    const first = output.split('\n').map((line) => line.trim()).find(Boolean);
+    return first?.split(/\s+/)[0] || null;
+  } catch {
+    return null;
+  }
+}
+
+async function getDefaultRoute(): Promise<{ gateway: string | null; device: string | null }> {
+  const output = await run('ip', ['-4', 'route', 'show', 'default'], 5_000);
+  const line = output.split('\n').map((entry) => entry.trim()).find(Boolean) || '';
+  const via = line.match(/\bvia\s+(\S+)/)?.[1] || null;
+  const dev = line.match(/\bdev\s+(\S+)/)?.[1] || null;
+  return { gateway: via, device: dev };
+}
+
+async function addEndpointBypassRoute(endpointHost: string | null): Promise<void> {
+  if (!endpointHost || endpointHost.includes(':')) return;
+  const endpointIp = await resolveEndpointIpv4(endpointHost);
+  if (!endpointIp) throw new Error(`Unable to resolve WireGuard endpoint ${endpointHost}.`);
+
+  const { gateway, device } = await getDefaultRoute();
+  if (!device) throw new Error('Unable to determine the container default network interface.');
+
+  const args = ['-4', 'route', 'replace', `${endpointIp}/32`];
+  if (gateway) args.push('via', gateway);
+  args.push('dev', device);
+  await run('ip', args);
+  fs.writeFileSync(ENDPOINT_ROUTE_PATH, endpointIp, { mode: 0o600 });
+}
+
+async function installAllowedIpRoutes(allowedIps: string[]): Promise<void> {
+  for (const cidr of allowedIps) {
+    if (cidr.includes(':')) continue;
+    if (cidr === '0.0.0.0/0') {
+      await run('ip', ['-4', 'route', 'replace', '0.0.0.0/1', 'dev', WG_INTERFACE]);
+      await run('ip', ['-4', 'route', 'replace', '128.0.0.0/1', 'dev', WG_INTERFACE]);
+      continue;
+    }
+    await run('ip', ['-4', 'route', 'replace', cidr, 'dev', WG_INTERFACE]);
+  }
+}
+
+async function cleanupRuntimeNetwork(): Promise<void> {
+  try {
+    await run('ip', ['link', 'delete', 'dev', WG_INTERFACE], 5_000);
+  } catch {
+    // Interface may already be absent.
+  }
+
+  try {
+    if (fs.existsSync(ENDPOINT_ROUTE_PATH)) {
+      const endpointIp = fs.readFileSync(ENDPOINT_ROUTE_PATH, 'utf8').trim();
+      if (endpointIp) {
+        try {
+          await run('ip', ['-4', 'route', 'delete', `${endpointIp}/32`], 5_000);
+        } catch {
+          // Route may already be absent.
+        }
+      }
+    }
+  } catch {
+    // Best-effort cleanup only.
+  }
+
+  for (const file of [CONFIG_PATH, WG_SETCONF_PATH, ENDPOINT_ROUTE_PATH]) {
+    try {
+      if (fs.existsSync(/* turbopackIgnore: true */ file)) fs.unlinkSync(file);
+    } catch {
+      // Best-effort cleanup only.
+    }
+  }
 }
 
 function rowToProfile(row: Record<string, unknown>): WireguardProfile {
@@ -187,12 +327,33 @@ export class WireguardService {
   static async startConnection(profile: WireguardProfile): Promise<{ success: boolean; error?: string }> {
     try {
       fs.mkdirSync(RUNTIME_DIR, { recursive: true, mode: 0o700 });
-      fs.writeFileSync(CONFIG_PATH, runtimeConfig(profile.config), { mode: 0o600 });
+      await cleanupRuntimeNetwork();
 
-      await execFileAsync('wg-quick', ['up', CONFIG_PATH], { timeout: 20_000 });
-      await execFileAsync('ip', ['link', 'show', 'dev', WG_INTERFACE], { timeout: 5_000 });
+      const runtime = buildRuntimeConfig(profile.config);
+      fs.writeFileSync(CONFIG_PATH, profile.config.trim(), { mode: 0o600 });
+      fs.writeFileSync(WG_SETCONF_PATH, runtime.setconf, { mode: 0o600 });
+
+      await addEndpointBypassRoute(runtime.endpointHost);
+      await run('ip', ['link', 'add', WG_INTERFACE, 'type', 'wireguard'], 5_000);
+      await run('wg', ['setconf', WG_INTERFACE, WG_SETCONF_PATH], 8_000);
+
+      for (const address of runtime.addresses) {
+        if (address.includes(':')) continue;
+        await run('ip', ['-4', 'address', 'add', address, 'dev', WG_INTERFACE], 5_000);
+      }
+
+      await run('ip', ['link', 'set', 'mtu', String(runtime.mtu), 'up', 'dev', WG_INTERFACE], 5_000);
+      await installAllowedIpRoutes(runtime.allowedIps);
+      await run('ip', ['link', 'show', 'dev', WG_INTERFACE], 5_000);
+
+      await LogService.info('wireguard', 'connect', `WireGuard interface ${WG_INTERFACE} started without wg-quick policy sysctls.`, {
+        profile_id: profile.id,
+        endpoint: runtime.endpointHost,
+        addresses: runtime.addresses,
+      });
       return { success: true };
     } catch (error) {
+      await cleanupRuntimeNetwork();
       const message = error instanceof Error ? error.message : String(error);
       return { success: false, error: `WireGuard startup failed: ${message}` };
     }
@@ -200,7 +361,7 @@ export class WireguardService {
 
   static async isConnectionActive(): Promise<boolean> {
     try {
-      await execFileAsync('ip', ['link', 'show', 'dev', WG_INTERFACE], { timeout: 3_000 });
+      await run('ip', ['link', 'show', 'dev', WG_INTERFACE], 3_000);
       return true;
     } catch {
       return false;
@@ -209,7 +370,7 @@ export class WireguardService {
 
   static async hasRecentHandshake(maxAgeSeconds = 180): Promise<boolean> {
     try {
-      const { stdout } = await execFileAsync('wg', ['show', WG_INTERFACE, 'latest-handshakes'], { timeout: 5_000 });
+      const stdout = await run('wg', ['show', WG_INTERFACE, 'latest-handshakes'], 5_000);
       const nowSeconds = Math.floor(Date.now() / 1000);
       return stdout
         .trim()
@@ -226,28 +387,7 @@ export class WireguardService {
 
   static async stopConnection(): Promise<{ success: boolean; error?: string }> {
     try {
-      if (fs.existsSync(CONFIG_PATH)) {
-        try {
-          await execFileAsync('wg-quick', ['down', CONFIG_PATH], { timeout: 15_000 });
-        } catch {
-          try {
-            await execFileAsync('ip', ['link', 'delete', 'dev', WG_INTERFACE], { timeout: 5_000 });
-          } catch {
-            // The interface may already be down.
-          }
-        }
-        try {
-          fs.unlinkSync(CONFIG_PATH);
-        } catch {
-          // Ignore cleanup failure.
-        }
-      } else {
-        try {
-          await execFileAsync('ip', ['link', 'delete', 'dev', WG_INTERFACE], { timeout: 5_000 });
-        } catch {
-          // Not active.
-        }
-      }
+      await cleanupRuntimeNetwork();
       return { success: true };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
