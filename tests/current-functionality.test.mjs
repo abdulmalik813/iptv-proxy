@@ -80,6 +80,14 @@ test('Saved VPNGate profiles retain vpn/vpn authentication and remain OpenVPN CR
   assert.match(manager, /username: 'vpn', password: 'vpn'/);
 });
 
+test('VPNGate retries one fresh relay after a non-conflict failure', async () => {
+  const route = await source('app/api/vpn/vpngate/route.ts');
+  assert.match(route, /VpnGateService\.fetchServers\(true\)/);
+  assert.match(route, /retryServer/);
+  assert.match(route, /attempts: 2/);
+  assert.match(route, /candidate\.countryShort === server\.countryShort/);
+});
+
 test('VPNGate UI keeps the full relay list but paginates display at ten items', async () => {
   const page = await source('app/vpn/page.tsx');
   assert.match(page, /const PAGE_SIZE = 10/);
@@ -90,7 +98,7 @@ test('VPNGate UI keeps the full relay list but paginates display at ten items', 
   assert.match(page, /setGatePage\(1\)/);
 });
 
-test('VPN page has on-demand container egress upload and download speed test', async () => {
+test('VPN page has on-demand sequential container egress upload and download speed test', async () => {
   const page = await source('app/vpn/page.tsx');
   const route = await source('app/api/vpn/speedtest/route.ts');
   assert.match(page, /Egress Speed Test/);
@@ -98,6 +106,9 @@ test('VPN page has on-demand container egress upload and download speed test', a
   assert.match(page, /uploadMbps/);
   assert.match(route, /speed\.cloudflare\.com\/__down/);
   assert.match(route, /speed\.cloudflare\.com\/__up/);
+  assert.match(route, /const downloadMbps = await runDownload\(\)/);
+  assert.match(route, /const uploadMbps = await runUpload\(\)/);
+  assert.doesNotMatch(route, /Promise\.all\(\[runDownload\(\), runUpload\(\)\]\)/);
   assert.match(route, /validateMutationRequest/);
   assert.match(route, /getSessionUser/);
 });
