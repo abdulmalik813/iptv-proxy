@@ -166,7 +166,7 @@ test('Go proxy is available in development and production images with placeholde
   assert.match(goMain, /I'm working/);
   assert.match(goMain, /:8080/);
   assert.match(goMain, /\/health/);
-  assert.match(goMod, /module github\.com\/abdulmalik813\/iptv-reverse-proxy/);
+  assert.match(goMod, /module github\.com\/abdulmalik813\/iptv-proxy/);
 });
 
 test('Next.js and Go run in one container so they always share VPN routing', async () => {
@@ -188,6 +188,16 @@ test('Next.js and Go run in one container so they always share VPN routing', asy
   assert.match(dokploy, /UI_URL: \$\{UI_URL:\?UI_URL is required\}/);
   assert.match(dokploy, /APP_URL: \$\{APP_URL:\?APP_URL is required\}/);
   assert.match(dokploy, /dokploy-network:/);
+  assert.match(dokploy, /iptv-proxy:/);
+});
+
+test('Project identifiers use the iptv-proxy name', async () => {
+  const pkg = JSON.parse(await source('package.json'));
+  const goMod = await source('go.mod');
+  const devDockerfile = await source('.devcontainer/Dockerfile');
+  assert.equal(pkg.name, 'iptv-proxy');
+  assert.match(goMod, /github\.com\/abdulmalik813\/iptv-proxy/);
+  assert.match(devDockerfile, /\/workspaces\/iptv-proxy/);
 });
 
 test('Core management API routes exist', async () => {
