@@ -30,8 +30,34 @@ services:
       timeout: 5s
       retries: 3
       start_period: 20s
+    networks:
+      - dokploy-network
+      - iptv-internal
+
+  iptv-go-proxy:
+    image: ghcr.io/abdulmalik813/iptv-reverse-proxy:latest
+    pull_policy: always
+    restart: unless-stopped
+    command: ["/usr/local/bin/iptv-go-proxy"]
+    environment:
+      GO_PROXY_ADDR: :8080
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    networks:
+      - dokploy-network
+      - iptv-internal
 
 volumes:
   iptv-proxy-data:
   iptv-proxy-wireguard:
   iptv-proxy-openvpn:
+
+networks:
+  dokploy-network:
+    external: true
+  iptv-internal:
+    driver: bridge
