@@ -1,6 +1,6 @@
 services:
   iptv-proxy-admin:
-    image: ghcr.io/abdulmalik813/iptv-reverse-proxy:latest
+    image: ghcr.io/abdulmalik813/iptv-proxy:latest
     pull_policy: always
     restart: unless-stopped
     cap_add:
