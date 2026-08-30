@@ -52,6 +52,17 @@ test('cached IPTV metadata validates replacements before storing them', async ()
   assert.match(handler, /old cache was preserved/);
 });
 
+test('cached M3U playlists rewrite playable URLs through the public proxy', async () => {
+  const handler = await source('internal/proxy/handler.go');
+  const m3u = await source('internal/proxy/m3u.go');
+  assert.match(handler, /endpoint == "get\.php"/);
+  assert.match(handler, /rewriteM3UPlaylist/);
+  assert.match(m3u, /p\.LocalUsername/);
+  assert.match(m3u, /p\.LocalPassword/);
+  assert.match(m3u, /p\.Route/);
+  assert.match(m3u, /case "live", "movie", "series", "timeshift"/);
+});
+
 test('HLS playlists rewrite nested playlists segments keys and maps back through the proxy', async () => {
   const handler = await source('internal/proxy/handler.go');
   assert.match(handler, /isHLSResponse/);
@@ -60,6 +71,31 @@ test('HLS playlists rewrite nested playlists segments keys and maps back through
   assert.match(handler, /ResolveReference/);
   assert.match(handler, /\/_hls\//);
   assert.match(handler, /hls:/);
+});
+
+test('continuous live streams use one upstream session with per-viewer queues', async () => {
+  const handler = await source('internal/proxy/handler.go');
+  const manager = await source('internal/stream/manager.go');
+  assert.match(handler, /shouldMultiplexLive/);
+  assert.match(handler, /serveLiveMultiplexed/);
+  assert.match(handler, /X-IPTV-Multiplexed/);
+  assert.match(manager, /sessions map\[string\]\*Session/);
+  assert.match(manager, /viewerQueueSize = 32/);
+  assert.match(manager, /len\(s\.viewers\) == 1/);
+  assert.match(manager, /only\.queue <- chunk/);
+  assert.match(manager, /delete\(s\.viewers, id\)/);
+  assert.match(manager, /s\.cancel\(\)/);
+});
+
+test('Go exposes protected live stream runtime status', async () => {
+  const main = await source('cmd/proxy/main.go');
+  const status = await source('app/api/system/status/route.ts');
+  assert.match(main, /\/internal\/streams/);
+  assert.match(main, /validInternalToken/);
+  assert.match(main, /LiveSnapshots/);
+  assert.match(status, /INTERNAL_API_TOKEN/);
+  assert.match(status, /activeStreams/);
+  assert.match(status, /viewers/);
 });
 
 test('Go receives sensitive provider configuration only through the internal authenticated endpoint', async () => {
