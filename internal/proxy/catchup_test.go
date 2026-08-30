@@ -27,6 +27,21 @@ func TestTimeshiftPHPAlternatePreservesProviderBasePathAndValues(t *testing.T) {
 	}
 }
 
+func TestTimeshiftPHPAlternateUsesFinalTimeshiftRoute(t *testing.T) {
+	target, _ := url.Parse("https://provider.test/timeshift/panel/timeshift/up/pass/60/2026-08-30:01-00/123.ts")
+	alternate, ok := timeshiftPHPAlternate(target)
+	if !ok {
+		t.Fatal("expected alternate")
+	}
+	if alternate.Path != "/timeshift/panel/streaming/timeshift.php" {
+		t.Fatalf("path=%q", alternate.Path)
+	}
+	q := alternate.Query()
+	if q.Get("username") != "up" || q.Get("password") != "pass" || q.Get("stream") != "123" || q.Get("start") != "2026-08-30:01-00" || q.Get("duration") != "60" {
+		t.Fatalf("query=%v", q)
+	}
+}
+
 func TestShouldTryTimeshiftPHPFallbackOnlyForCompatibleFailures(t *testing.T) {
 	target, _ := url.Parse("http://provider.test/timeshift/up/pass/60/2026-08-30:01-00/123.ts")
 	for _, status := range []int{http.StatusBadRequest, http.StatusNotFound, http.StatusMethodNotAllowed, http.StatusUnsupportedMediaType, http.StatusUnprocessableEntity} {
