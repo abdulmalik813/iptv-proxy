@@ -182,7 +182,7 @@ export default function ProviderTestsPage() {
                 <FlaskConical className="h-5 w-5" /> Provider Account Tests
               </h1>
               <p className="mt-1 text-xs text-neutral-500">
-                JSON account data is parsed normally. HTML responses are rendered below in an isolated sandbox.
+                JSON account data is parsed normally. HTML responses are rendered directly below for inspection.
               </p>
             </div>
             <div className="flex gap-2">
@@ -226,16 +226,13 @@ export default function ProviderTestsPage() {
                     <div className="m-4 space-y-3 border border-rose-900 bg-rose-950/30 p-3 text-xs text-rose-300">
                       <div className="flex items-center gap-2 font-bold uppercase"><XCircle className="h-4 w-4" /> {state.error}</div>
                       {state.data?.rawResponse && htmlResponse && (
-                        <div className="overflow-hidden border border-neutral-700 bg-white">
+                        <div className="overflow-hidden border border-neutral-700 bg-white text-black">
                           <div className="border-b border-neutral-300 bg-neutral-100 px-3 py-2 text-[10px] font-bold uppercase text-neutral-700">
                             Rendered HTML Response · HTTP {state.data.upstreamStatus ?? 'N/A'} · {state.data.rawContentType || 'text/html'}
                           </div>
-                          <iframe
-                            title={`${provider.name} upstream HTML response`}
-                            srcDoc={state.data.rawResponse}
-                            sandbox=""
-                            referrerPolicy="no-referrer"
-                            className="h-[420px] w-full bg-white"
+                          <div
+                            className="min-h-[420px] w-full overflow-auto bg-white p-0 font-sans text-black"
+                            dangerouslySetInnerHTML={{ __html: state.data.rawResponse }}
                           />
                         </div>
                       )}
