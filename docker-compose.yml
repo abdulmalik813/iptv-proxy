@@ -44,7 +44,7 @@ services:
     restart: unless-stopped
     command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec"]
     volumes:
-      - redis-data:/data
+      - iptv-redis-data:/data
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
@@ -52,4 +52,4 @@ services:
       retries: 5
 
 volumes:
-  redis-data:
+  iptv-redis-data:
