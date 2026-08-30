@@ -88,7 +88,3 @@ func (h *Handler) targetFromCacheDescriptor(ctx context.Context, descriptor cach
 	}
 	return p, target, headers, nil
 }
-
-func cacheKey(providerID, endpoint string, target *url.URL) string {
-	return cacheDescriptor(providerID, endpoint, target, nil).CacheKey()
-}
