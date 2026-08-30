@@ -16,15 +16,9 @@ export async function GET(req: NextRequest) {
   try {
     const user = await getSessionUser();
     if (!user) return NextResponse.json({ success: false, error: 'Unauthorized' }, { status: 401 });
-
     const forceRefresh = new URL(req.url).searchParams.get('refresh') === 'true';
     const servers = await VpnGateService.getPublicServers(forceRefresh);
-    return NextResponse.json({
-      success: true,
-      data: servers,
-      count: servers.length,
-      timestamp: new Date().toISOString(),
-    });
+    return NextResponse.json({ success: true, data: servers, count: servers.length, timestamp: new Date().toISOString() });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     return NextResponse.json({ success: false, error: message }, { status: 502 });
@@ -35,35 +29,24 @@ export async function POST(req: NextRequest) {
   try {
     const requestError = validateMutationRequest(req);
     if (requestError) return NextResponse.json({ success: false, error: requestError }, { status: 403 });
-
     const user = await getSessionUser();
     if (!user) return NextResponse.json({ success: false, error: 'Unauthorized' }, { status: 401 });
 
     const parsed = actionSchema.safeParse(await req.json());
-    if (!parsed.success) {
-      return NextResponse.json(
-        { success: false, error: parsed.error.issues[0]?.message || 'Invalid VPNGate action' },
-        { status: 400 }
-      );
-    }
+    if (!parsed.success) return NextResponse.json({ success: false, error: parsed.error.issues[0]?.message || 'Invalid VPNGate action' }, { status: 400 });
 
     const server = await VpnGateService.getServerById(parsed.data.serverId);
-    if (!server) {
-      return NextResponse.json(
-        { success: false, error: 'That VPNGate server is no longer in the current server list. Refresh and try again.' },
-        { status: 404 }
-      );
-    }
+    if (!server) return NextResponse.json({ success: false, error: 'That VPNGate server is no longer in the current server list. Refresh and try again.' }, { status: 404 });
 
     if (parsed.data.action === 'connect') {
-      if (VpnManager.isOperationInProgress()) {
-        return NextResponse.json({ success: false, error: 'Another VPN operation is already in progress.' }, { status: 409 });
-      }
+      if (VpnManager.isOperationInProgress()) return NextResponse.json({ success: false, error: 'Another VPN operation is already in progress.' }, { status: 409 });
       const result = await VpnManager.connectVpnGateServer(server.id);
+      const state = await VpnManager.getVpnStatusSummary();
       if (!result.success) {
-        return NextResponse.json({ success: false, error: result.error || 'VPNGate connection failed.' }, { status: 500 });
+        const conflict = state.status === 'connected' || /already connected|disconnect the current vpn|already being established/i.test(result.error || '');
+        return NextResponse.json({ success: false, error: result.error || 'VPNGate connection failed.', data: state }, { status: conflict ? 409 : 500 });
       }
-      return NextResponse.json({ success: true, data: await VpnManager.getVpnStatusSummary() });
+      return NextResponse.json({ success: true, data: state });
     }
 
     const profile = await OpenvpnService.createProfile({
@@ -76,6 +59,6 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ success: true, data: OpenvpnService.toSummary(profile) }, { status: 201 });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    return NextResponse.json({ success: false, error: message }, { status: 400 });
+    return NextResponse.json({ success: false, error: message, data: await VpnManager.getVpnStatusSummary().catch(() => null) }, { status: 400 });
   }
 }
