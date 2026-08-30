@@ -84,6 +84,26 @@ func TestManagerRejectsFailedUpstream(t *testing.T) {
 	}
 }
 
+func TestViewerDrainsQueuedBytesBeforeClosedEOF(t *testing.T) {
+	viewer := &Viewer{
+		queue:  make(chan []byte, 1),
+		closed: make(chan struct{}),
+	}
+	viewer.queue <- []byte("final-bytes")
+	close(viewer.closed)
+
+	chunk, err := viewer.Next(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(chunk) != "final-bytes" {
+		t.Fatalf("chunk=%q", chunk)
+	}
+	if _, err := viewer.Next(context.Background()); err != io.EOF {
+		t.Fatalf("expected EOF after draining queue, got %v", err)
+	}
+}
+
 type emptyReader struct{}
 
 func (*emptyReader) Read([]byte) (int, error) { return 0, io.EOF }

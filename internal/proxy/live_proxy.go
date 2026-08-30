@@ -1,12 +1,17 @@
 package proxy
 
 import (
+	"bytes"
 	"context"
+	"errors"
+	"io"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/abdulmalik813/iptv-proxy/internal/provider"
+	"github.com/abdulmalik813/iptv-proxy/internal/stream"
 )
 
 func (h *Handler) serveLiveMultiplexed(w http.ResponseWriter, r *http.Request, p provider.Provider, target *url.URL) {
@@ -46,6 +51,7 @@ func (h *Handler) serveLiveMultiplexed(w http.ResponseWriter, r *http.Request, p
 			})
 			return nil, err
 		}
+		detectedHLS := prepareHLSResponse(resp, target)
 		h.trace(ctx, "info", "upstream.response", "Incoming multiplexed live response from IPTV provider", map[string]any{
 			"direction":     "incoming",
 			"method":        http.MethodGet,
@@ -56,6 +62,7 @@ func (h *Handler) serveLiveMultiplexed(w http.ResponseWriter, r *http.Request, p
 			"providerRoute": p.Route,
 			"streamKey":     key,
 			"multiplexed":   true,
+			"detectedHls":   detectedHLS,
 			"status":        resp.StatusCode,
 			"contentType":   resp.Header.Get("Content-Type"),
 			"contentLength": resp.ContentLength,
@@ -68,6 +75,32 @@ func (h *Handler) serveLiveMultiplexed(w http.ResponseWriter, r *http.Request, p
 		return
 	}
 	defer session.Remove(viewer)
+
+	if strings.Contains(strings.ToLower(session.Header().Get("Content-Type")), "mpegurl") {
+		body, err := readMultiplexedHLS(r.Context(), viewer)
+		if err != nil {
+			h.trace(r.Context(), "error", "hls.read", "Failed to collect HLS playlist returned by live endpoint", map[string]any{
+				"providerId":   p.ID,
+				"providerName": p.Name,
+				"streamKey":    key,
+				"error":        err.Error(),
+			})
+			http.Error(w, "invalid HLS playlist", http.StatusBadGateway)
+			return
+		}
+		base := session.ResponseURL()
+		if base == nil {
+			base = target
+		}
+		h.trace(r.Context(), "info", "hls.detected", "Live endpoint returned HLS and was switched from TS multiplexing to playlist rewriting", map[string]any{
+			"providerId":   p.ID,
+			"providerName": p.Name,
+			"streamKey":    key,
+			"bytes":        len(body),
+		})
+		h.serveHLSBytes(w, r.Context(), p, base, session.StatusCode(), body)
+		return
+	}
 
 	copyResponseHeaders(w.Header(), session.Header())
 	w.Header().Del("Content-Length")
@@ -86,5 +119,24 @@ func (h *Handler) serveLiveMultiplexed(w http.ResponseWriter, r *http.Request, p
 			return
 		}
 		_ = controller.Flush()
+	}
+}
+
+func readMultiplexedHLS(ctx context.Context, viewer *stream.Viewer) ([]byte, error) {
+	var body bytes.Buffer
+	for {
+		chunk, err := viewer.Next(ctx)
+		if len(chunk) > 0 {
+			if body.Len()+len(chunk) > maxHLSPlaylistBytes {
+				return nil, errors.New("HLS playlist exceeds maximum size")
+			}
+			_, _ = body.Write(chunk)
+		}
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				return body.Bytes(), nil
+			}
+			return nil, err
+		}
 	}
 }

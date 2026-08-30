@@ -43,6 +43,10 @@ func (h *Handler) serveDirect(w http.ResponseWriter, r *http.Request, p provider
 	}
 	defer resp.Body.Close()
 
+	detectedHLS := false
+	if r.Method != http.MethodHead && resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		detectedHLS = prepareHLSResponse(resp, target)
+	}
 	h.trace(r.Context(), "info", "upstream.response", "Incoming media response from IPTV provider", map[string]any{
 		"direction":     "incoming",
 		"method":        r.Method,
@@ -54,10 +58,16 @@ func (h *Handler) serveDirect(w http.ResponseWriter, r *http.Request, p provider
 		"status":        resp.StatusCode,
 		"contentType":   resp.Header.Get("Content-Type"),
 		"contentLength": resp.ContentLength,
+		"detectedHls":   detectedHLS,
 		"elapsedMs":     time.Since(started).Milliseconds(),
 	})
 
-	if isHLSResponse(resp, target) {
+	if r.Method == http.MethodHead {
+		copyResponseHeaders(w.Header(), resp.Header)
+		w.WriteHeader(resp.StatusCode)
+		return
+	}
+	if detectedHLS {
 		h.serveHLSPlaylist(w, r.Context(), p, resp)
 		return
 	}
