@@ -7,13 +7,11 @@ services:
       - NET_ADMIN
     devices:
       - /dev/net/tun:/dev/net/tun
-    expose:
-      - "3000"
     environment:
       NODE_ENV: production
       DATABASE_PATH: /data/iptv-proxy.db
       SESSION_SECRET: ${SESSION_SECRET:?SESSION_SECRET is required}
-      APP_URL: ${APP_URL:-https://iptv.yourwebpage.ca/ui}
+      UI_URL: ${UI_URL:-https://iptv.yourwebpage.ca/ui}
       COOKIE_SECURE: ${COOKIE_SECURE:-true}
       INITIAL_ADMIN_USERNAME: ${INITIAL_ADMIN_USERNAME:-admin}
       INITIAL_ADMIN_PASSWORD: ${INITIAL_ADMIN_PASSWORD:-}
@@ -27,7 +25,7 @@ services:
       net.ipv4.ip_forward: "1"
       net.ipv4.conf.all.src_valid_mark: "1"
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:3000/api/health"]
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:3000/ui/api/health"]
       interval: 30s
       timeout: 5s
       retries: 3
