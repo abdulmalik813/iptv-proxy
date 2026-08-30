@@ -29,6 +29,10 @@ func NewResolver(registry *provider.Registry) *Resolver {
 	return &Resolver{registry: registry}
 }
 
+func (r *Resolver) Providers(ctx context.Context) ([]provider.Provider, error) {
+	return r.registry.Snapshot(ctx)
+}
+
 func (r *Resolver) ProviderByID(ctx context.Context, id string) (provider.Provider, error) {
 	providers, err := r.registry.Snapshot(ctx)
 	if err != nil {
