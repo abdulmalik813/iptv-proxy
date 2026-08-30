@@ -84,7 +84,7 @@ RUN chmod +x /usr/local/bin/iptv-proxy-entrypoint /usr/local/bin/iptv-go-proxy
 EXPOSE 3000 8080
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
-  CMD-SHELL curl -fsS http://127.0.0.1:3000/ui/api/health >/dev/null && curl -fsS http://127.0.0.1:8080/health >/dev/null
+  CMD curl -fsS http://127.0.0.1:3000/ui/api/health >/dev/null && curl -fsS http://127.0.0.1:8080/health >/dev/null || exit 1
 
 ENTRYPOINT ["/usr/bin/dumb-init", "--"]
 CMD ["/usr/local/bin/iptv-proxy-entrypoint"]
