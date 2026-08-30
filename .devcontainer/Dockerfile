@@ -26,4 +26,4 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 RUN corepack enable && corepack prepare pnpm@11.24.0 --activate
 
-WORKDIR /workspaces/iptv-reverse-proxy
+WORKDIR /workspaces/iptv-proxy
