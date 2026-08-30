@@ -74,6 +74,7 @@ export default function VpnPage() {
   const [gateRefreshing, setGateRefreshing] = useState(false);
   const [editor, setEditor] = useState<ProfileEditor | null>(null);
   const [editorSaving, setEditorSaving] = useState(false);
+  const [editorError, setEditorError] = useState<string | null>(null);
   const [speed, setSpeed] = useState<SpeedResult | null>(null);
   const [speedBusy, setSpeedBusy] = useState(false);
 
@@ -195,13 +196,20 @@ export default function VpnPage() {
     }
   };
 
+  const closeEditor = () => {
+    setEditor(null);
+    setEditorError(null);
+  };
+
   const openCreate = (kind: 'wireguard' | 'openvpn') => {
+    setEditorError(null);
     setEditor({ kind, id: null, name: '', config: '', username: '', password: '', enabled: true, source: kind === 'openvpn' ? 'uploaded' : undefined });
   };
 
   const openEdit = async (kind: 'wireguard' | 'openvpn', id: string) => {
     setBusy(`Loading ${kind} profile`);
     setError(null);
+    setEditorError(null);
     try {
       const r = await fetch(apiPath(`/api/vpn/${kind}/${id}`), { cache: 'no-store' });
       const b = await readJson(r);
@@ -226,7 +234,7 @@ export default function VpnPage() {
   const saveProfile = async () => {
     if (!editor) return;
     setEditorSaving(true);
-    setError(null);
+    setEditorError(null);
     try {
       const isEdit = Boolean(editor.id);
       const endpoint = isEdit ? `/api/vpn/${editor.kind}/${editor.id}` : `/api/vpn/${editor.kind}`;
@@ -236,10 +244,10 @@ export default function VpnPage() {
       const r = await fetch(apiPath(endpoint), { method: isEdit ? 'PUT' : 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
       const b = await readJson(r);
       if (!r.ok || !b.success) throw new Error(b.error || 'Failed to save profile');
-      setEditor(null);
+      closeEditor();
       if (editor.kind === 'wireguard') await loadWg(); else await loadOvpn();
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setEditorError(e instanceof Error ? e.message : String(e));
     } finally {
       setEditorSaving(false);
     }
@@ -348,13 +356,14 @@ export default function VpnPage() {
       {editor && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/85 p-4">
           <div className="max-h-[90vh] w-full max-w-2xl overflow-y-auto border border-neutral-700 bg-neutral-950 p-5">
-            <div className="mb-4 flex items-center justify-between"><div><h2 className="text-sm font-bold uppercase text-white">{editor.id ? 'Edit' : 'Add'} {editor.kind === 'wireguard' ? 'WireGuard' : 'OpenVPN'} Profile</h2>{editor.source === 'vpngate' && <p className="mt-1 text-[10px] uppercase text-neutral-500">Saved from VPNGate</p>}</div><button onClick={() => setEditor(null)} className="border border-neutral-700 p-1.5"><X className="h-4 w-4" /></button></div>
+            <div className="mb-4 flex items-center justify-between"><div><h2 className="text-sm font-bold uppercase text-white">{editor.id ? 'Edit' : 'Add'} {editor.kind === 'wireguard' ? 'WireGuard' : 'OpenVPN'} Profile</h2>{editor.source === 'vpngate' && <p className="mt-1 text-[10px] uppercase text-neutral-500">Saved from VPNGate</p>}</div><button onClick={closeEditor} className="border border-neutral-700 p-1.5"><X className="h-4 w-4" /></button></div>
             <div className="space-y-4 text-xs">
+              {editorError && <div className="flex items-start gap-2 border border-rose-800 bg-rose-950/30 p-3 text-rose-200"><AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" /><div><div className="font-bold uppercase">Validation error</div><div className="mt-1 break-words text-[11px] leading-relaxed">{editorError}</div></div></div>}
               <label className="block"><span className="mb-1 block text-neutral-500">Name</span><input value={editor.name} onChange={(e) => setEditor({ ...editor, name: e.target.value })} className="w-full border border-neutral-800 bg-black p-2 text-white" /></label>
               <label className="block"><span className="mb-1 block text-neutral-500">Configuration</span><textarea value={editor.config} onChange={(e) => setEditor({ ...editor, config: e.target.value })} rows={14} spellCheck={false} className="w-full border border-neutral-800 bg-black p-2 font-mono text-[11px] text-white" /></label>
               {editor.kind === 'openvpn' && <div className="grid gap-3 sm:grid-cols-2"><label><span className="mb-1 block text-neutral-500">Username</span><input value={editor.username} onChange={(e) => setEditor({ ...editor, username: e.target.value })} className="w-full border border-neutral-800 bg-black p-2 text-white" /></label><label><span className="mb-1 block text-neutral-500">Password</span><input type="password" value={editor.password} onChange={(e) => setEditor({ ...editor, password: e.target.value })} className="w-full border border-neutral-800 bg-black p-2 text-white" /></label></div>}
               {editor.id && <label className="flex items-center gap-2 text-neutral-400"><input type="checkbox" checked={editor.enabled} onChange={(e) => setEditor({ ...editor, enabled: e.target.checked })} />Enabled</label>}
-              <div className="flex justify-end gap-2"><button onClick={() => setEditor(null)} className="border border-neutral-700 px-4 py-2 uppercase">Cancel</button><button disabled={editorSaving || !editor.name.trim() || !editor.config.trim()} onClick={() => void saveProfile()} className="flex items-center gap-2 border border-white bg-white px-4 py-2 font-bold uppercase text-black disabled:opacity-40"><Save className="h-3.5 w-3.5" />{editorSaving ? 'Saving…' : 'Save'}</button></div>
+              <div className="flex justify-end gap-2"><button onClick={closeEditor} className="border border-neutral-700 px-4 py-2 uppercase">Cancel</button><button disabled={editorSaving || !editor.name.trim() || !editor.config.trim()} onClick={() => void saveProfile()} className="flex items-center gap-2 border border-white bg-white px-4 py-2 font-bold uppercase text-black disabled:opacity-40"><Save className="h-3.5 w-3.5" />{editorSaving ? 'Saving…' : 'Save'}</button></div>
             </div>
           </div>
         </div>
