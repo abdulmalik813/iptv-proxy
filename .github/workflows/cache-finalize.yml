@@ -71,7 +71,22 @@ jobs:
         run: test -z "$(gofmt -l .)"
 
       - name: Go vet
-        run: go vet ./...
+        id: govet
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          go vet ./... 2>&1 | tee vet-output.txt
+
+      - name: Upload vet output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cache-finalize-vet-output
+          path: vet-output.txt
+
+      - name: Stop on vet failure
+        if: steps.govet.outcome == 'failure'
+        run: exit 1
 
       - name: Go integration scenarios
         run: go test ./... -count=1
