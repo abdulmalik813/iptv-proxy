@@ -59,11 +59,19 @@ func withTrace(ctx context.Context) (context.Context, traceInfo) {
 	return context.WithValue(ctx, traceContextKey{}, info), info
 }
 
+func ensureTrace(ctx context.Context) context.Context {
+	if _, ok := ctx.Value(traceContextKey{}).(traceInfo); ok {
+		return ctx
+	}
+	traced, _ := withTrace(ctx)
+	return traced
+}
+
 func traceFrom(ctx context.Context) traceInfo {
 	if value, ok := ctx.Value(traceContextKey{}).(traceInfo); ok {
 		return value
 	}
-	return traceInfo{ID: newTraceID(), Started: time.Now()}
+	return traceInfo{ID: "untracked", Started: time.Now()}
 }
 
 func (h *Handler) trace(ctx context.Context, level, category, message string, metadata map[string]any) {
