@@ -71,6 +71,26 @@ test('persisted Redis cache fetch jobs are rehydrated after every Go restart', a
   assert.match(resolver, /ProviderByID/);
 });
 
+test('empty Redis cache can be explicitly prewarmed from the admin UI', async () => {
+  const warm = await source('internal/proxy/cache_warm.go');
+  const cacheWarm = await source('internal/cache/warm.go');
+  const main = await source('cmd/proxy/main.go');
+  const route = await source('app/api/system/cache/route.ts');
+  const page = await source('app/cache/page.tsx');
+  assert.match(warm, /WarmAllCache/);
+  for (const action of ['get_live_categories', 'get_live_streams', 'get_vod_categories', 'get_vod_streams', 'get_series_categories', 'get_series']) assert.match(warm, new RegExp(action));
+  assert.match(warm, /xmltv\.php/);
+  assert.match(warm, /get\.php/);
+  assert.match(warm, /cache\.warm\.start/);
+  assert.match(warm, /cache\.warm\.success/);
+  assert.match(warm, /cache\.warm\.error/);
+  assert.match(cacheWarm, /func \(m \*Manager\) Warm/);
+  assert.match(main, /\/internal\/cache\/start/);
+  assert.match(route, /\/internal\/cache\/start/);
+  assert.match(page, /Start Pull/);
+  assert.match(page, /Pull Activity/);
+});
+
 test('purge fetches and validates replacement before atomically replacing old cache', async () => {
   const cache = compact(await source('internal/cache/manager.go'));
   const main = await source('cmd/proxy/main.go');
@@ -82,7 +102,7 @@ test('purge fetches and validates replacement before atomically replacing old ca
   assert.doesNotMatch(cache, /m\.client\.Del\(ctx, key/);
   assert.match(main, /"replaced": count/);
   assert.match(main, /"replaced": 1/);
-  assert.match(page, /fresh provider data was fetched and validated before the old value was atomically replaced/);
+  assert.match(page, /Cache safely repulled and atomically replaced/);
 });
 
 test('purge all never deletes cache entries before replacements are validated', async () => {
