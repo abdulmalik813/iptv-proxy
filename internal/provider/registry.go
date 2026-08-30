@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,6 +13,15 @@ import (
 	"time"
 )
 
+type User struct {
+	ID        string `json:"id"`
+	Username  string `json:"username"`
+	Password  string `json:"password"`
+	Enabled   int    `json:"enabled"`
+	CreatedAt string `json:"created_at"`
+	UpdatedAt string `json:"updated_at"`
+}
+
 type Provider struct {
 	ID                 string `json:"id"`
 	Name               string `json:"name"`
@@ -21,9 +31,32 @@ type Provider struct {
 	UpstreamPassword   string `json:"upstream_password"`
 	LocalUsername      string `json:"local_username"`
 	LocalPassword      string `json:"local_password"`
+	Users              []User `json:"users"`
 	IsDefault          int    `json:"is_default"`
 	CacheDurationHours int    `json:"cache_duration_hours"`
 	Enabled            int    `json:"enabled"`
+}
+
+func secureEqual(left, right string) bool {
+	if len(left) == 0 || len(left) != len(right) {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(left), []byte(right)) == 1
+}
+
+func (p Provider) Authenticate(username, password string) (User, bool) {
+	for _, user := range p.Users {
+		if user.Enabled != 1 || user.Username != username {
+			continue
+		}
+		if secureEqual(user.Password, password) {
+			return user, true
+		}
+	}
+	if len(p.Users) == 0 && p.LocalUsername == username && secureEqual(p.LocalPassword, password) {
+		return User{Username: p.LocalUsername, Password: p.LocalPassword, Enabled: 1}, true
+	}
+	return User{}, false
 }
 
 type apiResponse struct {
