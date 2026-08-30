@@ -76,6 +76,9 @@ func (h *Handler) fetchCacheable(ctx context.Context, p provider.Provider, endpo
 		return cachepkg.Response{}, err
 	}
 	copySafeRequestHeaders(req.Header, sourceHeaders)
+	// Cache validation operates on the provider's original JSON/XML/M3U bytes.
+	// Asking for identity encoding also avoids storing client-specific compressed variants.
+	req.Header.Del("Accept-Encoding")
 	h.trace(ctx, "debug", "upstream.request", "Requesting IPTV metadata from provider", map[string]any{
 		"providerId":    p.ID,
 		"providerName":  p.Name,
