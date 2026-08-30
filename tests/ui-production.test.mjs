@@ -142,7 +142,7 @@ test('data-heavy pages remain usable on narrow screens and expand on desktop', a
   assert.match(vpn, /sm:grid-cols-2/);
   assert.match(logs, /sm:grid-cols-2/);
   assert.match(dashboard, /sm:grid-cols-2/);
-  assert.match(dashboard, /lg:grid-cols-4/);
+  assert.match(dashboard, /xl:grid-cols-4/);
   assert.match(settings, /lg:grid-cols-2/);
   assert.match(dialog, /p-4 sm:p-6/);
   assert.match(dialog, /w-full max-w-lg/);
