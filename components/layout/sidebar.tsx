@@ -11,7 +11,6 @@ import {
   ScrollText,
   Settings,
   LogOut,
-  Radio,
 } from 'lucide-react';
 
 interface SidebarProps {
@@ -81,22 +80,6 @@ export function Sidebar({ user, onLogout, mobileOpen, setMobileOpen }: SidebarPr
             </Link>
           );
         })}
-
-        <div className="px-2 pt-6 py-1 text-[10px] font-semibold tracking-wider text-neutral-500 uppercase">
-          CORE ENDPOINTS
-        </div>
-        <div className="space-y-1.5 border border-neutral-900 bg-neutral-950/60 px-3 py-2 font-mono text-[11px] text-neutral-400">
-          <div className="flex items-center gap-1.5 text-neutral-300">
-            <Radio className="h-3 w-3 text-neutral-400" />
-            <span className="font-semibold">Xtream Codes Engine</span>
-          </div>
-          <div className="break-all text-[10px] text-neutral-500">
-            Proxy Port: <span className="text-neutral-300">8080 (Go Engine)</span>
-          </div>
-          <div className="break-all text-[10px] text-neutral-500">
-            Admin Port: <span className="text-neutral-300">3000 (Next.js)</span>
-          </div>
-        </div>
       </nav>
 
       <div id="sidebar-footer" className="border-t border-neutral-800 bg-neutral-950 p-3 font-mono">
