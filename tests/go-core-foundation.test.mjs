@@ -12,7 +12,7 @@ test('Redis is present in local and Dokploy compose files', async () => {
     assert.match(compose, /redis:\n/);
     assert.match(compose, /image: redis:8-alpine/);
     assert.match(compose, /REDIS_ADDR: redis:6379/);
-    assert.match(compose, /redis-data:\/data/);
+    assert.match(compose, /iptv-redis-data:\/data/);
     assert.match(compose, /redis-cli.*ping/);
   }
 });
