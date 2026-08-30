@@ -5,6 +5,7 @@ import { LogService } from './log.service';
 
 const MASK = '••••••••';
 const RESERVED_ROUTES = new Set([
+  'ui',
   'api',
   'admin',
   'login',
@@ -108,11 +109,7 @@ export interface UpdateProviderInput {
 
 export class ProviderService {
   static toPublicProvider(provider: IptvProvider): IptvProvider {
-    return {
-      ...provider,
-      upstream_password: MASK,
-      local_password: MASK,
-    };
+    return { ...provider, upstream_password: MASK, local_password: MASK };
   }
 
   static async getAllProviders(includeSensitive = false): Promise<IptvProvider[]> {
@@ -131,60 +128,27 @@ export class ProviderService {
   static async createProvider(input: CreateProviderInput): Promise<IptvProvider> {
     await initDatabase();
     const db = getDb();
-
     const name = input.name.trim();
     const route = normalizeRoute(input.route);
     const host = normalizeHost(input.host);
     if (!name) throw new Error('Provider name is required.');
     if (!route) throw new Error('Provider route is required and must contain letters or numbers.');
     if (isRouteReserved(route)) throw new Error(`Route "${route}" is reserved by the system.`);
-
     const routeCheck = await db.execute({ sql: 'SELECT id FROM iptv_providers WHERE route = ?', args: [route] });
     if (routeCheck.rows.length) throw new Error(`Route "${route}" is already in use.`);
-
     const id = crypto.randomUUID();
     const now = new Date().toISOString();
     const isDefault = input.is_default ? 1 : 0;
     const cacheHours = Math.max(0, Math.min(24, Math.trunc(input.cache_duration_hours ?? 1)));
     const enabled = input.enabled === false ? 0 : 1;
-
     const statements: Array<string | { sql: string; args: Array<string | number> }> = [];
-    if (isDefault) {
-      statements.push({
-        sql: 'UPDATE iptv_providers SET is_default = 0, updated_at = ? WHERE is_default = 1',
-        args: [now],
-      });
-    }
+    if (isDefault) statements.push({ sql: 'UPDATE iptv_providers SET is_default = 0, updated_at = ? WHERE is_default = 1', args: [now] });
     statements.push({
-      sql: `INSERT INTO iptv_providers (
-        id, name, host, route, upstream_username, upstream_password,
-        local_username, local_password, is_default, cache_duration_hours,
-        enabled, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      args: [
-        id,
-        name,
-        host,
-        route,
-        input.upstream_username.trim(),
-        input.upstream_password,
-        input.local_username.trim(),
-        input.local_password,
-        isDefault,
-        cacheHours,
-        enabled,
-        now,
-        now,
-      ],
+      sql: `INSERT INTO iptv_providers (id, name, host, route, upstream_username, upstream_password, local_username, local_password, is_default, cache_duration_hours, enabled, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      args: [id, name, host, route, input.upstream_username.trim(), input.upstream_password, input.local_username.trim(), input.local_password, isDefault, cacheHours, enabled, now, now],
     });
-
     await db.batch(statements);
-    await LogService.info('provider', 'creation', `Created provider "${name}" on route "/${route}".`, {
-      provider_id: id,
-      is_default: Boolean(isDefault),
-      cache_duration_hours: cacheHours,
-    });
-
+    await LogService.info('provider', 'creation', `Created provider "${name}" on route "/${route}".`, { provider_id: id, is_default: Boolean(isDefault), cache_duration_hours: cacheHours });
     const created = await this.getProviderById(id, false);
     if (!created) throw new Error('Provider was created but could not be reloaded.');
     return created;
@@ -195,79 +159,36 @@ export class ProviderService {
     const db = getDb();
     const existing = await this.getProviderById(id, true);
     if (!existing) throw new Error('Provider not found.');
-
     const now = new Date().toISOString();
     const statements: Array<string | { sql: string; args: Array<string | number> }> = [];
-
     const name = input.name !== undefined ? input.name.trim() : existing.name;
     if (!name) throw new Error('Provider name cannot be empty.');
-
     let route = existing.route;
     if (input.route !== undefined) {
       route = normalizeRoute(input.route);
       if (!route) throw new Error('Provider route cannot be empty.');
       if (isRouteReserved(route)) throw new Error(`Route "${route}" is reserved.`);
-      const check = await db.execute({
-        sql: 'SELECT id FROM iptv_providers WHERE route = ? AND id != ?',
-        args: [route, id],
-      });
+      const check = await db.execute({ sql: 'SELECT id FROM iptv_providers WHERE route = ? AND id != ?', args: [route, id] });
       if (check.rows.length) throw new Error(`Route "${route}" is already in use.`);
     }
-
     const host = input.host !== undefined ? normalizeHost(input.host) : existing.host;
     let isDefault = existing.is_default;
     if (input.is_default !== undefined) {
       isDefault = input.is_default ? 1 : 0;
-      if (isDefault) {
-        statements.push({
-          sql: 'UPDATE iptv_providers SET is_default = 0, updated_at = ? WHERE is_default = 1 AND id != ?',
-          args: [now, id],
-        });
-      }
+      if (isDefault) statements.push({ sql: 'UPDATE iptv_providers SET is_default = 0, updated_at = ? WHERE is_default = 1 AND id != ?', args: [now, id] });
     }
-
     const upstreamUsername = input.upstream_username !== undefined ? input.upstream_username.trim() : existing.upstream_username;
-    const upstreamPassword =
-      input.upstream_password !== undefined && input.upstream_password !== MASK
-        ? input.upstream_password
-        : existing.upstream_password;
+    const upstreamPassword = input.upstream_password !== undefined && input.upstream_password !== MASK ? input.upstream_password : existing.upstream_password;
     const localUsername = input.local_username !== undefined ? input.local_username.trim() : existing.local_username;
-    const localPassword =
-      input.local_password !== undefined && input.local_password !== MASK ? input.local_password : existing.local_password;
-    const cacheHours =
-      input.cache_duration_hours !== undefined
-        ? Math.max(0, Math.min(24, Math.trunc(input.cache_duration_hours)))
-        : existing.cache_duration_hours;
+    const localPassword = input.local_password !== undefined && input.local_password !== MASK ? input.local_password : existing.local_password;
+    const cacheHours = input.cache_duration_hours !== undefined ? Math.max(0, Math.min(24, Math.trunc(input.cache_duration_hours))) : existing.cache_duration_hours;
     const enabled = input.enabled !== undefined ? (input.enabled ? 1 : 0) : existing.enabled;
-
     statements.push({
-      sql: `UPDATE iptv_providers SET
-        name = ?, host = ?, route = ?, upstream_username = ?, upstream_password = ?,
-        local_username = ?, local_password = ?, is_default = ?, cache_duration_hours = ?,
-        enabled = ?, updated_at = ? WHERE id = ?`,
-      args: [
-        name,
-        host,
-        route,
-        upstreamUsername,
-        upstreamPassword,
-        localUsername,
-        localPassword,
-        isDefault,
-        cacheHours,
-        enabled,
-        now,
-        id,
-      ],
+      sql: `UPDATE iptv_providers SET name = ?, host = ?, route = ?, upstream_username = ?, upstream_password = ?, local_username = ?, local_password = ?, is_default = ?, cache_duration_hours = ?, enabled = ?, updated_at = ? WHERE id = ?`,
+      args: [name, host, route, upstreamUsername, upstreamPassword, localUsername, localPassword, isDefault, cacheHours, enabled, now, id],
     });
-
     await db.batch(statements);
-    await LogService.info('provider', 'update', `Updated provider "${name}" (route: "/${route}").`, {
-      provider_id: id,
-      is_default: Boolean(isDefault),
-      enabled: Boolean(enabled),
-    });
-
+    await LogService.info('provider', 'update', `Updated provider "${name}" (route: "/${route}").`, { provider_id: id, is_default: Boolean(isDefault), enabled: Boolean(enabled) });
     const updated = await this.getProviderById(id, false);
     if (!updated) throw new Error('Provider was updated but could not be reloaded.');
     return updated;
@@ -278,17 +199,12 @@ export class ProviderService {
     const db = getDb();
     const provider = await this.getProviderById(id, false);
     if (!provider) throw new Error('Provider not found.');
-
     const now = new Date().toISOString();
     await db.batch([
       { sql: 'UPDATE iptv_providers SET is_default = 0, updated_at = ? WHERE is_default = 1', args: [now] },
       { sql: 'UPDATE iptv_providers SET is_default = 1, updated_at = ? WHERE id = ?', args: [now, id] },
     ]);
-
-    await LogService.info('provider', 'default', `Set provider "${provider.name}" as the default provider.`, {
-      provider_id: id,
-    });
-
+    await LogService.info('provider', 'default', `Set provider "${provider.name}" as the default provider.`, { provider_id: id });
     const updated = await this.getProviderById(id, false);
     if (!updated) throw new Error('Provider not found after default update.');
     return updated;
@@ -299,58 +215,29 @@ export class ProviderService {
     const db = getDb();
     const provider = await this.getProviderById(id, false);
     if (!provider) throw new Error('Provider not found.');
-
     await db.execute({ sql: 'DELETE FROM iptv_providers WHERE id = ?', args: [id] });
-    await LogService.warn('provider', 'deletion', `Deleted provider "${provider.name}" (route: "/${provider.route}").`, {
-      provider_id: id,
-    });
+    await LogService.warn('provider', 'deletion', `Deleted provider "${provider.name}" (route: "/${provider.route}").`, { provider_id: id });
   }
 
-  static async resolveProviderByPath(requestPath: string): Promise<{
-    provider: IptvProvider | null;
-    matchedBy: 'route' | 'default' | 'none';
-    remainingPath: string;
-    resolvedTargetUrl: string | null;
-  }> {
+  static async resolveProviderByPath(requestPath: string): Promise<{ provider: IptvProvider | null; matchedBy: 'route' | 'default' | 'none'; remainingPath: string; resolvedTargetUrl: string | null }> {
     await initDatabase();
     const db = getDb();
     const trimmed = requestPath.trim().replace(/^\/+/, '');
     const segments = trimmed ? trimmed.split('/') : [];
     const firstSegment = segments[0] ? normalizeRoute(segments[0]) : '';
-
     if (firstSegment) {
-      const match = await db.execute({
-        sql: 'SELECT * FROM iptv_providers WHERE route = ? AND enabled = 1 LIMIT 1',
-        args: [firstSegment],
-      });
+      const match = await db.execute({ sql: 'SELECT * FROM iptv_providers WHERE route = ? AND enabled = 1 LIMIT 1', args: [firstSegment] });
       if (match.rows.length) {
         const provider = rowToProvider(match.rows[0] as unknown as Record<string, unknown>, true);
         const remaining = segments.slice(1).join('/');
-        return {
-          provider,
-          matchedBy: 'route',
-          remainingPath: `/${remaining}`,
-          resolvedTargetUrl: remaining ? `${provider.host}/${remaining}` : provider.host,
-        };
+        return { provider, matchedBy: 'route', remainingPath: `/${remaining}`, resolvedTargetUrl: remaining ? `${provider.host}/${remaining}` : provider.host };
       }
     }
-
     const fallback = await db.execute('SELECT * FROM iptv_providers WHERE is_default = 1 AND enabled = 1 LIMIT 1');
     if (fallback.rows.length) {
       const provider = rowToProvider(fallback.rows[0] as unknown as Record<string, unknown>, true);
-      return {
-        provider,
-        matchedBy: 'default',
-        remainingPath: `/${trimmed}`,
-        resolvedTargetUrl: trimmed ? `${provider.host}/${trimmed}` : provider.host,
-      };
+      return { provider, matchedBy: 'default', remainingPath: `/${trimmed}`, resolvedTargetUrl: trimmed ? `${provider.host}/${trimmed}` : provider.host };
     }
-
-    return {
-      provider: null,
-      matchedBy: 'none',
-      remainingPath: `/${trimmed}`,
-      resolvedTargetUrl: null,
-    };
+    return { provider: null, matchedBy: 'none', remainingPath: `/${trimmed}`, resolvedTargetUrl: null };
   }
 }
