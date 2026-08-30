@@ -27,8 +27,10 @@ RUN pnpm build
 
 FROM golang:1.27-bookworm AS go-builder
 WORKDIR /src
-COPY go.mod ./
+COPY go.mod go.sum ./
+RUN go mod download
 COPY cmd ./cmd
+COPY internal ./internal
 RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/iptv-go-proxy ./cmd/proxy
 
 FROM node:22-bookworm-slim AS runner
@@ -41,6 +43,7 @@ ENV HOSTNAME=0.0.0.0
 ENV DATABASE_PATH=/data/iptv-proxy.db
 ENV UI_URL=http://localhost:3000/ui
 ENV GO_PROXY_ADDR=:8080
+ENV REDIS_ADDR=redis:6379
 ENV VPN_BYPASS_TCP_PORTS=3000,8080
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
