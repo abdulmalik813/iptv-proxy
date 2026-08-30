@@ -1,15 +1,25 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getSessionUser } from '@/lib/auth/session';
+import { z } from 'zod';
+import { hasManagementAccess } from '@/lib/auth/api-access';
 import { validateMutationRequest } from '@/lib/auth/request-security';
 import { LogService } from '@/lib/services/log.service';
 
 const ALLOWED_LEVELS = new Set(['debug', 'info', 'warning', 'error', 'all']);
 const ALLOWED_ORDERS = new Set(['ASC', 'DESC']);
+const logWriteSchema = z.object({
+  level: z.enum(['debug', 'info', 'warning', 'error']),
+  source: z.enum(['auth', 'provider', 'vpn', 'wireguard', 'openvpn', 'warp', 'vpngate', 'system', 'proxy']),
+  category: z.string().trim().min(1).max(128),
+  message: z.string().min(1).max(8000),
+  metadata: z.record(z.string(), z.unknown()).nullable().optional(),
+});
 
 export async function GET(req: NextRequest) {
   try {
-    const user = await getSessionUser();
-    if (!user) return NextResponse.json({ success: false, error: 'Unauthorized' }, { status: 401 });
+    if (!(await hasManagementAccess(req))) {
+      return NextResponse.json({ success: false, error: 'Unauthorized' }, { status: 401 });
+    }
+
     const { searchParams } = new URL(req.url);
     const rawLevel = searchParams.get('level') || undefined;
     const level = rawLevel && ALLOWED_LEVELS.has(rawLevel) ? rawLevel : undefined;
@@ -27,14 +37,42 @@ export async function GET(req: NextRequest) {
   }
 }
 
+export async function POST(req: NextRequest) {
+  try {
+    const requestError = validateMutationRequest(req);
+    if (requestError) return NextResponse.json({ success: false, error: requestError }, { status: 403 });
+    if (!(await hasManagementAccess(req))) {
+      return NextResponse.json({ success: false, error: 'Unauthorized' }, { status: 401 });
+    }
+
+    const parsed = logWriteSchema.safeParse(await req.json());
+    if (!parsed.success) {
+      return NextResponse.json({ success: false, error: parsed.error.issues[0]?.message || 'Invalid log entry' }, { status: 400 });
+    }
+
+    const entry = await LogService.writeLog(
+      parsed.data.level,
+      parsed.data.source,
+      parsed.data.category,
+      parsed.data.message,
+      parsed.data.metadata
+    );
+    return NextResponse.json({ success: true, data: entry }, { status: 201 });
+  } catch (error) {
+    return NextResponse.json({ success: false, error: error instanceof Error ? error.message : String(error) }, { status: 500 });
+  }
+}
+
 export async function DELETE(req: NextRequest) {
   try {
     const requestError = validateMutationRequest(req);
     if (requestError) return NextResponse.json({ success: false, error: requestError }, { status: 403 });
-    const user = await getSessionUser();
-    if (!user) return NextResponse.json({ success: false, error: 'Unauthorized' }, { status: 401 });
+    if (!(await hasManagementAccess(req))) {
+      return NextResponse.json({ success: false, error: 'Unauthorized' }, { status: 401 });
+    }
+
     const count = await LogService.clearAllLogs();
-    return NextResponse.json({ success: true, message: `Cleared ${count} log entries.` });
+    return NextResponse.json({ success: true, deleted: count });
   } catch (error) {
     return NextResponse.json({ success: false, error: error instanceof Error ? error.message : String(error) }, { status: 500 });
   }
