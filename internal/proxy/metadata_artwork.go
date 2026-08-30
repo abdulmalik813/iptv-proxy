@@ -13,9 +13,9 @@ import (
 var (
 	m3uLogoDouble = regexp.MustCompile(`(?i)\btvg-logo\s*=\s*"([^"]*)"`)
 	m3uLogoSingle = regexp.MustCompile(`(?i)\btvg-logo\s*=\s*'([^']*)'`)
-	xmlIconTag     = regexp.MustCompile(`(?is)<icon\b[^>]*>`)
-	xmlSrcDouble   = regexp.MustCompile(`(?i)\bsrc\s*=\s*"([^"]*)"`)
-	xmlSrcSingle   = regexp.MustCompile(`(?i)\bsrc\s*=\s*'([^']*)'`)
+	xmlIconTag    = regexp.MustCompile(`(?is)<icon\b[^>]*>`)
+	xmlSrcDouble  = regexp.MustCompile(`(?i)\bsrc\s*=\s*"([^"]*)"`)
+	xmlSrcSingle  = regexp.MustCompile(`(?i)\bsrc\s*=\s*'([^']*)'`)
 )
 
 var jsonArtworkKeys = map[string]bool{
@@ -121,7 +121,8 @@ func looksLikeArtworkURL(raw string) bool {
 	lower := strings.ToLower(value)
 	return strings.HasPrefix(lower, "http://") ||
 		strings.HasPrefix(lower, "https://") ||
-		strings.HasPrefix(value, "/")
+		strings.HasPrefix(value, "/") ||
+		strings.Contains(value, "/")
 }
 
 func (h *Handler) rewriteM3UArtwork(ctx context.Context, p provider.Provider, body []byte) []byte {
