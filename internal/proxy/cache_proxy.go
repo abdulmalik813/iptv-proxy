@@ -16,19 +16,15 @@ import (
 )
 
 func (h *Handler) serveCached(w http.ResponseWriter, r *http.Request, p provider.Provider, endpoint string, upstreamURL *url.URL) {
-	ttl := time.Duration(p.CacheDurationHours) * time.Hour
-	key := cacheKey(p.ID, endpoint, upstreamURL)
-	requestHeaders := r.Header.Clone()
-	response, fromCache, err := h.cache.GetOrFetch(r.Context(), key, ttl, func(ctx context.Context) (cachepkg.Response, error) {
-		ctx = ensureTrace(ctx)
-		return h.fetchCacheable(ctx, p, endpoint, upstreamURL, requestHeaders)
-	})
+	spec := h.newCacheSpec(p, endpoint, upstreamURL, r.Header.Clone())
+	response, fromCache, err := h.cache.GetOrFetch(r.Context(), spec)
 	if err != nil {
 		h.trace(r.Context(), "error", "cache.fetch", "Cached IPTV metadata request failed", map[string]any{
 			"providerId":   p.ID,
 			"providerName": p.Name,
 			"endpoint":     endpoint,
 			"action":       upstreamURL.Query().Get("action"),
+			"cacheKey":     spec.Key,
 			"error":        err.Error(),
 		})
 		status := http.StatusBadGateway
@@ -40,10 +36,8 @@ func (h *Handler) serveCached(w http.ResponseWriter, r *http.Request, p provider
 		return
 	}
 
-	cacheState := "MISS"
-	if fromCache {
-		cacheState = "HIT"
-	} else if ttl <= 0 {
+	cacheState := "HIT"
+	if !fromCache && spec.TTL <= 0 {
 		cacheState = "BYPASS"
 	}
 	w.Header().Set("X-IPTV-Cache", cacheState)
@@ -55,15 +49,20 @@ func (h *Handler) serveCached(w http.ResponseWriter, r *http.Request, p provider
 	if endpoint == "get.php" {
 		body = h.rewriteM3UPlaylist(p, body)
 	}
+	items := -1
+	if response.ItemCountKnown {
+		items = response.ItemCount
+	}
 	h.trace(r.Context(), "debug", "cache.result", "IPTV metadata response ready", map[string]any{
 		"providerId":   p.ID,
 		"providerName": p.Name,
 		"endpoint":     endpoint,
 		"action":       upstreamURL.Query().Get("action"),
+		"cacheKey":     spec.Key,
 		"cache":        cacheState,
 		"status":       response.Status,
 		"bytes":        len(body),
-		"items":        jsonItemCount(endpoint, body),
+		"items":        items,
 	})
 	w.WriteHeader(response.Status)
 	_, _ = w.Write(body)
@@ -103,6 +102,11 @@ func (h *Handler) fetchCacheable(ctx context.Context, p provider.Provider, endpo
 	if err != nil {
 		return cachepkg.Response{}, err
 	}
+	itemCount, itemCountKnown := jsonItemCount(endpoint, body)
+	itemsForLog := -1
+	if itemCountKnown {
+		itemsForLog = itemCount
+	}
 	h.trace(ctx, "debug", "upstream.response", "IPTV metadata provider responded", map[string]any{
 		"providerId":   p.ID,
 		"providerName": p.Name,
@@ -111,7 +115,7 @@ func (h *Handler) fetchCacheable(ctx context.Context, p provider.Provider, endpo
 		"status":       resp.StatusCode,
 		"contentType":  resp.Header.Get("Content-Type"),
 		"bytes":        len(body),
-		"items":        jsonItemCount(endpoint, body),
+		"items":        itemsForLog,
 		"elapsedMs":    time.Since(started).Milliseconds(),
 	})
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
@@ -120,7 +124,13 @@ func (h *Handler) fetchCacheable(ctx context.Context, p provider.Provider, endpo
 	if err := validateCacheBody(endpoint, body); err != nil {
 		return cachepkg.Response{}, err
 	}
-	return cachepkg.Response{Status: resp.StatusCode, ContentType: resp.Header.Get("Content-Type"), Body: body}, nil
+	return cachepkg.Response{
+		Status:         resp.StatusCode,
+		ContentType:    resp.Header.Get("Content-Type"),
+		Body:           body,
+		ItemCount:      itemCount,
+		ItemCountKnown: itemCountKnown,
+	}, nil
 }
 
 func validateCacheBody(endpoint string, body []byte) error {
@@ -132,28 +142,28 @@ func validateCacheBody(endpoint string, body []byte) error {
 	case "player_api.php":
 		var value any
 		if json.Unmarshal(trimmed, &value) != nil {
-			return errors.New("provider returned invalid JSON; old cache was preserved")
+			return errors.New("provider returned invalid JSON")
 		}
 	case "get.php":
 		if !bytes.HasPrefix(trimmed, []byte("#EXTM3U")) {
-			return errors.New("provider returned an invalid M3U playlist; old cache was preserved")
+			return errors.New("provider returned an invalid M3U playlist")
 		}
 	case "xmltv.php":
 		lower := bytes.ToLower(trimmed)
 		if !bytes.Contains(lower, []byte("<tv")) {
-			return errors.New("provider returned invalid XMLTV data; old cache was preserved")
+			return errors.New("provider returned invalid XMLTV data")
 		}
 	}
 	return nil
 }
 
-func jsonItemCount(endpoint string, body []byte) int {
+func jsonItemCount(endpoint string, body []byte) (int, bool) {
 	if endpoint != "player_api.php" {
-		return -1
+		return 0, false
 	}
 	var list []json.RawMessage
 	if err := json.Unmarshal(bytes.TrimSpace(body), &list); err == nil {
-		return len(list)
+		return len(list), true
 	}
-	return -1
+	return 0, false
 }
