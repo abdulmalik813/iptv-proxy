@@ -8,13 +8,13 @@ import (
 	"github.com/abdulmalik813/iptv-proxy/internal/provider"
 )
 
-func (h *Handler) rewriteM3UPlaylist(p provider.Provider, body []byte) []byte {
+func (h *Handler) rewriteM3UPlaylist(p provider.Provider, clientUser provider.User, body []byte) []byte {
 	lines := bytes.Split(body, []byte("\n"))
 	for i, rawLine := range lines {
 		line := string(rawLine)
 		trimmed := strings.TrimSpace(line)
 		if trimmed != "" && !strings.HasPrefix(trimmed, "#") {
-			if rewritten, ok := h.rewriteM3UTarget(p, trimmed); ok {
+			if rewritten, ok := h.rewriteM3UTarget(p, clientUser, trimmed); ok {
 				line = rewritten
 			}
 		}
@@ -23,7 +23,10 @@ func (h *Handler) rewriteM3UPlaylist(p provider.Provider, body []byte) []byte {
 	return bytes.Join(lines, []byte("\n"))
 }
 
-func (h *Handler) rewriteM3UTarget(p provider.Provider, raw string) (string, bool) {
+func (h *Handler) rewriteM3UTarget(p provider.Provider, clientUser provider.User, raw string) (string, bool) {
+	if clientUser.Username == "" || clientUser.Password == "" {
+		return "", false
+	}
 	urlPart, pipeOptions := splitM3UPipeOptions(raw)
 	target, err := url.Parse(urlPart)
 	if err != nil || target.Scheme == "" || target.Host == "" {
@@ -48,16 +51,16 @@ func (h *Handler) rewriteM3UTarget(p provider.Provider, raw string) (string, boo
 		if len(segments) < 4 {
 			return "", false
 		}
-		segments[1] = p.LocalUsername
-		segments[2] = p.LocalPassword
+		segments[1] = clientUser.Username
+		segments[2] = clientUser.Password
 		streamPath = "/" + strings.Join(segments, "/")
 	case "streaming":
 		q := target.Query()
 		if q.Get("username") == "" && q.Get("password") == "" {
 			return "", false
 		}
-		q.Set("username", p.LocalUsername)
-		q.Set("password", p.LocalPassword)
+		q.Set("username", clientUser.Username)
+		q.Set("password", clientUser.Password)
 		target.RawQuery = q.Encode()
 	default:
 		return "", false
