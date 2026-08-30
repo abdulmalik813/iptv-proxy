@@ -40,6 +40,18 @@ test('production compose requires public URLs and service credentials', async ()
   assert.doesNotMatch(compose, /^networks:/m);
 });
 
+test('only application data is persisted', async () => {
+  const prod = await source('docker-compose.dokploy.yml');
+  const local = await source('docker-compose.yml');
+
+  assert.match(prod, /iptv-proxy-data:\/data/);
+  assert.doesNotMatch(prod, /iptv-proxy-wireguard/);
+  assert.doesNotMatch(prod, /iptv-proxy-openvpn/);
+  assert.match(local, /\.\/data:\/data/);
+  assert.doesNotMatch(local, /vpn_configs\/wireguard/);
+  assert.doesNotMatch(local, /vpn_configs\/openvpn/);
+});
+
 test('Next.js and Go run in the same production container', async () => {
   const entrypoint = await source('docker/entrypoint.sh');
   const dockerfile = await source('Dockerfile');
@@ -64,6 +76,16 @@ test('admin UI exposes Go core health state', async () => {
   assert.match(route, /running/);
   assert.match(topbar, /\/api\/system\/status/);
   assert.match(topbar, /GO \{goRunning \? 'RUNNING' : 'OFFLINE'\}/);
+});
+
+test('admin UI supports persistent light and dark themes', async () => {
+  const topbar = await source('components/layout/top-bar.tsx');
+  const css = await source('app/globals.css');
+
+  assert.match(topbar, /iptv-proxy-theme/);
+  assert.match(topbar, /btn-theme-toggle/);
+  assert.match(topbar, /document\.documentElement\.dataset\.theme/);
+  assert.match(css, /data-theme='light'/);
 });
 
 test('WireGuard and OpenVPN reject unsafe executable directives', async () => {
@@ -179,7 +201,7 @@ test('provider responses mask credentials and reserve proxy routes', async () =>
   }
 });
 
-test('provider account diagnostics test Xtream credentials and render success or error per provider', async () => {
+test('provider account diagnostics handle JSON, HTML, and plain text responses', async () => {
   const route = await source('app/api/providers/[id]/test/route.ts');
   const page = await source('app/providers/tests/page.tsx');
   const sidebar = await source('components/layout/sidebar.tsx');
@@ -188,6 +210,8 @@ test('provider account diagnostics test Xtream credentials and render success or
   assert.match(route, /upstream_username/);
   assert.match(route, /upstream_password/);
   assert.match(route, /AbortSignal\.timeout\(15_000\)/);
+  assert.match(route, /rawResponse/);
+  assert.match(route, /rawContentType/);
   assert.match(route, /userInfo\.auth === 1/);
   assert.match(route, /safeAccountInfo/);
   assert.match(route, /safeServerInfo/);
@@ -195,8 +219,9 @@ test('provider account diagnostics test Xtream credentials and render success or
   assert.match(page, /Test All/);
   assert.match(page, /Test Account/);
   assert.match(page, /Connected & Authenticated/);
-  assert.match(page, /Test Failed/);
-  assert.match(page, /state\.error/);
+  assert.match(page, /srcDoc=/);
+  assert.match(page, /sandbox=""/);
+  assert.match(page, /Rendered HTML Response/);
   assert.match(sidebar, /Provider Tests/);
   assert.match(sidebar, /\/providers\/tests/);
 });
