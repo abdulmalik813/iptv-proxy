@@ -2,8 +2,12 @@ from pathlib import Path
 
 path = Path("tests/go-core-foundation.test.mjs")
 text = path.read_text()
-old = r"assert.match(cache, /m\.refillMissing\(spec\)/);"
-new = r"assert.match(cache, /m\.refillMissing\(activeSpec\)/);"
-if old not in text:
-    raise RuntimeError("cold-fill source contract pattern not found")
-path.write_text(text.replace(old, new, 1))
+replacements = {
+    r"assert.match(cache, /m\.refillMissing\(spec\)/);": r"assert.match(cache, /m\.refillMissing\(activeSpec\)/);",
+    r"  assert.match(cache, /RefreshNow/);\n": r"  assert.doesNotMatch(cache, /RefreshNow/);\n",
+}
+for old, new in replacements.items():
+    if old not in text:
+        raise RuntimeError(f"cache source contract pattern not found: {old}")
+    text = text.replace(old, new, 1)
+path.write_text(text)
