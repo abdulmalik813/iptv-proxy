@@ -18,7 +18,7 @@ export async function GET(_req: NextRequest, { params }: Context) {
     if (!user) return NextResponse.json({ success: false, error: 'Unauthorized' }, { status: 401 });
     const profile = await WireguardService.getProfileById((await params).id);
     if (!profile) return NextResponse.json({ success: false, error: 'Profile not found' }, { status: 404 });
-    return NextResponse.json({ success: true, data: WireguardService.toSummary(profile) });
+    return NextResponse.json({ success: true, data: profile });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     return NextResponse.json({ success: false, error: message }, { status: 500 });
@@ -31,18 +31,9 @@ export async function PUT(req: NextRequest, { params }: Context) {
     if (requestError) return NextResponse.json({ success: false, error: requestError }, { status: 403 });
     const user = await getSessionUser();
     if (!user) return NextResponse.json({ success: false, error: 'Unauthorized' }, { status: 401 });
-
     const parsed = updateSchema.safeParse(await req.json());
-    if (!parsed.success) {
-      return NextResponse.json({ success: false, error: parsed.error.issues[0]?.message || 'Invalid parameters' }, { status: 400 });
-    }
-
-    const updated = await WireguardService.updateProfile(
-      (await params).id,
-      parsed.data.name,
-      parsed.data.config,
-      parsed.data.enabled
-    );
+    if (!parsed.success) return NextResponse.json({ success: false, error: parsed.error.issues[0]?.message || 'Invalid parameters' }, { status: 400 });
+    const updated = await WireguardService.updateProfile((await params).id, parsed.data.name, parsed.data.config, parsed.data.enabled);
     return NextResponse.json({ success: true, data: WireguardService.toSummary(updated) });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -56,7 +47,6 @@ export async function DELETE(req: NextRequest, { params }: Context) {
     if (requestError) return NextResponse.json({ success: false, error: requestError }, { status: 403 });
     const user = await getSessionUser();
     if (!user) return NextResponse.json({ success: false, error: 'Unauthorized' }, { status: 401 });
-
     await WireguardService.deleteProfile((await params).id);
     return NextResponse.json({ success: true, message: 'WireGuard profile deleted' });
   } catch (error) {
