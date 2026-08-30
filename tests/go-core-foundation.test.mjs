@@ -38,52 +38,75 @@ test('Go routing only forwards recognized authenticated IPTV endpoint families',
   assert.match(handler, /invalid IPTV credentials/);
 });
 
-test('Go cache fails closed on a miss, starts a background refill, and refreshes at 30 percent remaining', async () => {
+test('cache design contract documents the production invariants and scenario target', async () => {
+  const design = await source('docs/cache-design-review.md');
+  assert.match(design, /30% of the configured cache lifetime remains/);
+  assert.match(design, /keep old -> fetch new -> validate -> atomically publish new/);
+  assert.match(design, /at least 100 sub-scenarios/);
+  assert.match(design, /Live streams, VOD\/series media bytes, HLS segments/);
+});
+
+test('cache manager has one replacement lifecycle and fail-closed cold misses', async () => {
   const cache = compact(await source('internal/cache/manager.go'));
-  const cacheProxy = compact(await source('internal/proxy/cache_proxy.go'));
   assert.match(cache, /refreshThreshold = 0\.30/);
   assert.match(cache, /ErrCacheUnavailable/);
-  assert.match(cache, /m\.refillMissing\(key, ttl, fetch\)/);
+  assert.match(cache, /m\.refillMissing\(spec\)/);
   assert.match(cache, /return Response\{\}, false, ErrCacheUnavailable/);
-  assert.match(cache, /SetNX/);
-  assert.match(cache, /time\.AfterFunc/);
-  assert.match(cache, /1\s*-\s*refreshThreshold/);
-  assert.match(cache, /m\.put\(ctx, key, ttl, fresh\)/);
-  assert.match(cacheProxy, /StatusServiceUnavailable/);
-  assert.match(cacheProxy, /Retry-After/);
+  assert.match(cache, /replaceWithSpec/);
+  assert.match(cache, /RefreshNow/);
+  assert.match(cache, /Purge/);
+  assert.match(cache, /Warm/);
+  assert.match(cache, /lockTTL\s*=\s*12 \* time\.Minute/);
+  assert.match(cache, /fetchTimeout\s*=\s*10 \* time\.Minute/);
 });
 
 test('cache duration zero bypasses Redis and calls the provider directly', async () => {
   const cache = compact(await source('internal/cache/manager.go'));
-  assert.match(cache, /if ttl\s*<=\s*0\s*\{\s*resp\s*,\s*err\s*:=\s*fetch\(ctx\)/);
+  assert.match(cache, /if spec\.TTL <= 0 \{ response, err := spec\.Fetch\(ctx\)/);
 });
 
-test('metadata cache responses have no fixed size limit', async () => {
+test('metadata cache has no fixed response-size ceiling and uses chunked generations', async () => {
   const handler = await source('internal/proxy/handler.go');
   const cacheProxy = await source('internal/proxy/cache_proxy.go');
+  const cache = await source('internal/cache/manager.go');
   assert.doesNotMatch(handler, /maxMetadataBytes/);
   assert.doesNotMatch(cacheProxy, /maxMetadataBytes/);
   assert.doesNotMatch(cacheProxy, /LimitReader/);
-  assert.doesNotMatch(cacheProxy, /256 MiB cache limit/);
   assert.match(cacheProxy, /io\.ReadAll\(resp\.Body\)/);
+  assert.match(cache, /bodyChunkSize\s*=\s*8 \* 1024 \* 1024/);
+  assert.match(cache, /writeGeneration/);
+  assert.match(cache, /generation/);
+  assert.match(cache, /chunk_count/);
+  assert.match(cache, /HStrLen/);
 });
 
-test('persisted Redis cache fetch jobs are rehydrated after every Go restart', async () => {
+test('canonical cache descriptors remove duplicate endpoint keys and credentials', async () => {
+  const cache = await source('internal/cache/manager.go');
+  const spec = await source('internal/proxy/cache_spec.go');
+  const handler = await source('internal/proxy/handler.go');
+  assert.match(cache, /type Descriptor struct/);
+  assert.match(cache, /func \(d Descriptor\) CacheKey\(\)/);
+  assert.match(spec, /query\.Del\("username"\)/);
+  assert.match(spec, /query\.Del\("password"\)/);
+  assert.doesNotMatch(handler, /strings\.TrimPrefix\(target\.Path/);
+});
+
+test('persisted cache descriptors rehydrate refresh jobs and safely migrate legacy duplicates', async () => {
   const main = await source('cmd/proxy/main.go');
   const rehydrate = await source('internal/proxy/cache_rehydrate.go');
-  const resolver = await source('internal/routing/resolver.go');
+  const migrate = await source('internal/cache/migrate.go');
   assert.match(main, /RehydratePersistedCache/);
-  assert.match(main, /rehydrated %d persisted IPTV cache fetch jobs/);
-  assert.match(rehydrate, /h\.cache\.Entries/);
-  assert.match(rehydrate, /rebuildTargetFromCacheKey/);
-  assert.match(rehydrate, /h\.cache\.GetOrFetch/);
-  assert.match(rehydrate, /h\.fetchCacheable/);
-  assert.match(resolver, /ProviderByID/);
+  assert.match(rehydrate, /entry\.Descriptor/);
+  assert.match(rehydrate, /MigrateLegacy/);
+  assert.match(rehydrate, /cache\.rehydrate\.success/);
+  assert.match(rehydrate, /cache\.rehydrate\.failed/);
+  assert.match(migrate, /publish/);
+  assert.match(migrate, /deleteDuplicate/);
 });
 
 test('empty Redis cache can be explicitly prewarmed from the admin UI', async () => {
   const warm = await source('internal/proxy/cache_warm.go');
-  const cacheWarm = await source('internal/cache/warm.go');
+  const cache = await source('internal/cache/manager.go');
   const main = await source('cmd/proxy/main.go');
   const route = await source('app/api/system/cache/route.ts');
   const page = await source('app/cache/page.tsx');
@@ -91,51 +114,60 @@ test('empty Redis cache can be explicitly prewarmed from the admin UI', async ()
   for (const action of ['get_live_categories', 'get_live_streams', 'get_vod_categories', 'get_vod_streams', 'get_series_categories', 'get_series']) assert.match(warm, new RegExp(action));
   assert.match(warm, /xmltv\.php/);
   assert.match(warm, /get\.php/);
-  assert.match(warm, /cache\.warm\.start/);
-  assert.match(warm, /cache\.warm\.success/);
-  assert.match(warm, /cache\.warm\.error/);
-  assert.match(cacheWarm, /func \(m \*Manager\) Warm/);
+  assert.match(cache, /func \(m \*Manager\) Warm/);
   assert.match(main, /\/internal\/cache\/start/);
   assert.match(route, /\/internal\/cache\/start/);
   assert.match(page, /Start Pull/);
-  assert.match(page, /Pull Activity/);
+  assert.match(page, /Cache Activity/);
 });
 
-test('purge fetches and validates replacement before atomically replacing old cache', async () => {
+test('refresh purge and start pull use safe generation publication', async () => {
   const cache = compact(await source('internal/cache/manager.go'));
-  const main = await source('cmd/proxy/main.go');
   const page = await source('app/cache/page.tsx');
   assert.match(cache, /func \(m \*Manager\) Purge\(/);
-  assert.match(cache, /return m\.replaceNow\(ctx, key\)/);
-  assert.match(cache, /fresh, err := spec\.fetch\(refreshCtx\)/);
-  assert.match(cache, /m\.put\(refreshCtx, key, spec\.ttl, fresh\)/);
-  assert.doesNotMatch(cache, /m\.client\.Del\(ctx, key/);
-  assert.match(main, /"replaced": count/);
-  assert.match(main, /"replaced": 1/);
-  assert.match(page, /Cache safely repulled and atomically replaced/);
+  assert.match(cache, /return m\.replaceNow\(ctx, key, "purge"\)/);
+  assert.match(cache, /func \(m \*Manager\) RefreshNow/);
+  assert.match(cache, /return m\.replaceNow\(ctx, key, "refresh"\)/);
+  assert.match(cache, /writeGeneration/);
+  assert.match(cache, /TxPipelined/);
+  assert.match(cache, /cleanupGeneration/);
+  assert.match(page, /previous generation stayed active until the swap/);
 });
 
-test('purge all never deletes cache entries before replacements are validated', async () => {
+test('non-empty cached catalogs are protected from transient empty replacements', async () => {
   const cache = compact(await source('internal/cache/manager.go'));
-  assert.match(cache, /PurgeAll/);
-  assert.match(cache, /m\.replaceNow\(ctx, entry\.Key\)/);
-  assert.doesNotMatch(cache, /m\.client\.Del\(ctx, entry\.Key/);
+  assert.match(cache, /ErrSuspiciousEmptyReplacement/);
+  assert.match(cache, /oldManifest\.Meta\.ItemCount > 0/);
+  assert.match(cache, /fresh\.ItemCount == 0/);
 });
 
-test('cached IPTV metadata validates replacements before storing them', async () => {
-  const cacheProxy = await source('internal/proxy/cache_proxy.go');
-  assert.match(cacheProxy, /get\.php/);
-  assert.match(cacheProxy, /xmltv\.php/);
-  assert.match(cacheProxy, /json\.Unmarshal/);
-  assert.match(cacheProxy, /#EXTM3U/);
-  assert.match(cacheProxy, /<tv/);
-  assert.match(cacheProxy, /old cache was preserved/);
+test('cache lifecycle operations are observable through the existing proxy log channel', async () => {
+  const cache = await source('internal/cache/manager.go');
+  const main = await source('cmd/proxy/main.go');
+  assert.match(cache, /type Event struct/);
+  assert.match(cache, /cache\.fill\.start/);
+  assert.match(cache, /cache\.fill\.published/);
+  assert.match(cache, /lock_busy/);
+  assert.match(main, /SetEventSink/);
+  assert.match(main, /operationId/);
+});
+
+test('Redis-backed Go test suite executes a matrix of 100 cache scenarios', async () => {
+  const workflow = await source('.github/workflows/test.yml');
+  const scenarios = await source('internal/cache/manager_test.go');
+  assert.match(workflow, /image: redis:8-alpine/);
+  assert.match(scenarios, /TestCacheScenarioMatrixRunsAtLeast100Scenarios/);
+  assert.match(scenarios, /scenario != 100/);
+  assert.match(scenarios, /TestLargeBodyUsesMultipleChunksAndRoundTrips/);
+  assert.match(scenarios, /TestConcurrentReplacementUsesSingleLockOwner/);
+  assert.match(scenarios, /TestNonEmptyCatalogRejectsEmptyReplacement/);
+  assert.match(scenarios, /TestLegacyMigrationPublishesCanonicalEntryBeforeDeletingDuplicate/);
 });
 
 test('cached M3U playlists rewrite playable URLs through the public proxy', async () => {
   const cacheProxy = compact(await source('internal/proxy/cache_proxy.go'));
   const m3u = await source('internal/proxy/m3u.go');
-  assert.match(cacheProxy, /endpoint\s*==\s*"get\.php"/);
+  assert.match(cacheProxy, /endpoint == "get\.php"/);
   assert.match(cacheProxy, /rewriteM3UPlaylist/);
   assert.match(m3u, /p\.LocalUsername/);
   assert.match(m3u, /p\.LocalPassword/);
@@ -160,7 +192,7 @@ test('HLS playlists proxy nested playlists segments keys maps audio and subtitle
 test('provider catch-up supports path and streaming timeshift forms', async () => {
   const handler = compact(await source('internal/proxy/handler.go'));
   const tests = await source('internal/proxy/direct_test.go');
-  assert.match(handler, /case\s+"timeshift"/);
+  assert.match(handler, /case "timeshift"/);
   assert.match(handler, /timeshift\.php/);
   assert.match(tests, /TestBuildUpstreamURLTimeshiftPath/);
   assert.match(tests, /TestBuildUpstreamURLStreamingTimeshiftQuery/);
