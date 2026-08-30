@@ -1,10 +1,27 @@
 {
   "name": "IPTV Proxy Dev Container",
-  "image": "mcr.microsoft.com/devcontainers/typescript-node:1-22-bookworm",
+  "build": {
+    "dockerfile": "Dockerfile",
+    "context": ".."
+  },
+  "containerUser": "root",
+  "remoteUser": "root",
   "runArgs": [
     "--cap-add=NET_ADMIN",
-    "--device=/dev/net/tun:/dev/net/tun"
+    "--device=/dev/net/tun:/dev/net/tun",
+    "--sysctl=net.ipv4.ip_forward=1",
+    "--sysctl=net.ipv4.conf.all.src_valid_mark=1"
   ],
+  "mounts": [
+    "source=iptv-proxy-node-modules,target=${containerWorkspaceFolder}/node_modules,type=volume",
+    "source=iptv-proxy-pnpm-store,target=/root/.local/share/pnpm/store,type=volume"
+  ],
+  "containerEnv": {
+    "DATABASE_PATH": "${containerWorkspaceFolder}/data/iptv-proxy.db",
+    "COOKIE_SECURE": "false",
+    "NEXT_TELEMETRY_DISABLED": "1",
+    "VPN_BYPASS_TCP_PORTS": "3000,8080"
+  },
   "customizations": {
     "vscode": {
       "extensions": [
@@ -15,5 +32,10 @@
     }
   },
   "forwardPorts": [3000, 8080],
-  "postCreateCommand": "npm install"
+  "portsAttributes": {
+    "3000": { "label": "Next.js Admin" },
+    "8080": { "label": "Future Go Proxy" }
+  },
+  "postCreateCommand": "mkdir -p node_modules data /root/.local/share/pnpm/store /run/dbus && corepack enable && corepack prepare pnpm@11.24.0 --activate && pnpm install",
+  "postStartCommand": "mkdir -p /run/dbus && (pgrep -x dbus-daemon >/dev/null 2>&1 || dbus-daemon --system --fork || true)"
 }

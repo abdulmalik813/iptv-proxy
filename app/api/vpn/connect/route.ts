@@ -1,29 +1,30 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 import { getSessionUser } from '@/lib/auth/session';
+import { validateMutationRequest } from '@/lib/auth/request-security';
 import { VpnManager } from '@/lib/services/vpn/vpn-manager';
 
 const connectSchema = z.object({
   type: z.enum(['wireguard', 'openvpn', 'warp']),
-  profileId: z.string().optional(),
+  profileId: z.string().trim().min(1).max(256).optional(),
 });
 
 export async function POST(req: NextRequest) {
   try {
+    const requestError = validateMutationRequest(req);
+    if (requestError) return NextResponse.json({ success: false, error: requestError }, { status: 403 });
+
     const user = await getSessionUser();
-    if (!user) {
-      return NextResponse.json({ success: false, error: 'Unauthorized' }, { status: 401 });
-    }
+    if (!user) return NextResponse.json({ success: false, error: 'Unauthorized' }, { status: 401 });
 
     if (VpnManager.isOperationInProgress()) {
       return NextResponse.json(
-        { success: false, error: 'A VPN connection or transition operation is already in progress. Please wait.' },
-        { status: 429 }
+        { success: false, error: 'Another VPN operation is already in progress.' },
+        { status: 409 }
       );
     }
 
-    const body = await req.json();
-    const parsed = connectSchema.safeParse(body);
+    const parsed = connectSchema.safeParse(await req.json());
     if (!parsed.success) {
       return NextResponse.json(
         { success: false, error: parsed.error.issues[0]?.message || 'Invalid parameters' },
@@ -32,33 +33,25 @@ export async function POST(req: NextRequest) {
     }
 
     const { type, profileId } = parsed.data;
-
-    let res: { success: boolean; error?: string };
+    let result: { success: boolean; error?: string };
 
     if (type === 'wireguard') {
-      if (!profileId) {
-        return NextResponse.json({ success: false, error: 'profileId is required for WireGuard' }, { status: 400 });
-      }
-      res = await VpnManager.connectWireguard(profileId);
+      if (!profileId) return NextResponse.json({ success: false, error: 'profileId is required.' }, { status: 400 });
+      result = await VpnManager.connectWireguard(profileId);
     } else if (type === 'openvpn') {
-      if (!profileId) {
-        return NextResponse.json({ success: false, error: 'profileId is required for OpenVPN' }, { status: 400 });
-      }
-      res = await VpnManager.connectOpenvpn(profileId);
-    } else if (type === 'warp') {
-      res = await VpnManager.connectWarp();
+      if (!profileId) return NextResponse.json({ success: false, error: 'profileId is required.' }, { status: 400 });
+      result = await VpnManager.connectOpenvpn(profileId);
     } else {
-      return NextResponse.json({ success: false, error: 'Unsupported VPN type' }, { status: 400 });
+      result = await VpnManager.connectWarp();
     }
 
-    if (!res.success) {
-      return NextResponse.json({ success: false, error: res.error || 'Connection failed' }, { status: 500 });
+    if (!result.success) {
+      return NextResponse.json({ success: false, error: result.error || 'VPN connection failed.' }, { status: 500 });
     }
 
-    const summary = await VpnManager.getVpnStatusSummary();
-    return NextResponse.json({ success: true, data: summary });
-  } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err);
-    return NextResponse.json({ success: false, error: msg }, { status: 500 });
+    return NextResponse.json({ success: true, data: await VpnManager.getVpnStatusSummary() });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return NextResponse.json({ success: false, error: message }, { status: 500 });
   }
 }

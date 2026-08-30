@@ -1,53 +1,79 @@
-# Multi-stage Dockerfile for IPTV Proxy Management Application
-FROM node:22-alpine AS base
+# syntax=docker/dockerfile:1
+
+FROM node:22-bookworm-slim AS base
 WORKDIR /app
+ENV NEXT_TELEMETRY_DISABLED=1
+RUN npm install --global pnpm@11.24.0
 
-# Install system dependencies needed for VPN and networking
-RUN apk add --no-cache \
-    dumb-init \
-    wireguard-tools \
-    openvpn \
-    iptables \
-    iproute2 \
-    curl \
-    ca-certificates \
-    sqlite
-
-# Stage 1: Install dependencies
 FROM base AS deps
-WORKDIR /app
-COPY package.json package-lock.json* ./
-RUN npm ci
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    python3 \
+    make \
+    g++ \
+  && rm -rf /var/lib/apt/lists/*
+COPY package.json ./
+RUN pnpm install --no-frozen-lockfile
 
-# Stage 2: Build the Next.js application
 FROM base AS builder
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
-ENV NEXT_TELEMETRY_DISABLED=1
+RUN mkdir -p public
 ENV NODE_ENV=production
-RUN npm run build
+RUN pnpm build
 
-# Stage 3: Production Runner
-FROM base AS runner
+FROM node:22-bookworm-slim AS runner
 WORKDIR /app
 
 ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED=1
 ENV PORT=3000
+ENV HOSTNAME=0.0.0.0
 ENV DATABASE_PATH=/data/iptv-proxy.db
+ENV VPN_BYPASS_TCP_PORTS=3000,8080
 
-# Create data and VPN temporary runtime directories
-RUN mkdir -p /data /tmp/vpn /etc/wireguard /etc/openvpn
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    curl \
+    gnupg \
+    dumb-init \
+    wireguard-tools \
+    openvpn \
+    iptables \
+    iproute2 \
+    sqlite3 \
+    procps \
+    iputils-ping \
+    dnsutils \
+    dbus \
+  && curl -fsSL https://pkg.cloudflareclient.com/pubkey.gpg \
+      | gpg --dearmor --yes -o /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg \
+  && echo "deb [signed-by=/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg] https://pkg.cloudflareclient.com/ bookworm main" \
+      > /etc/apt/sources.list.d/cloudflare-client.list \
+  && apt-get update \
+  && apt-get install -y --no-install-recommends cloudflare-warp \
+  && rm -rf /var/lib/apt/lists/*
 
-COPY --from=builder /app/package.json ./package.json
-COPY --from=builder /app/node_modules ./node_modules
-COPY --from=builder /app/.next ./.next
+RUN mkdir -p \
+    /data \
+    /data/warp \
+    /tmp/vpn \
+    /tmp/vpn/wireguard \
+    /tmp/vpn/openvpn \
+    /etc/wireguard \
+    /etc/openvpn
+
+COPY --from=builder /app/.next/standalone ./
+COPY --from=builder /app/.next/static ./.next/static
 COPY --from=builder /app/public ./public
-COPY --from=builder /app/lib ./lib
+COPY docker/entrypoint.sh /usr/local/bin/iptv-proxy-entrypoint
+RUN chmod +x /usr/local/bin/iptv-proxy-entrypoint
 
 EXPOSE 3000
 
-# Use dumb-init to properly handle signal forwarding (SIGTERM, SIGINT) to child processes
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+  CMD curl -fsS http://127.0.0.1:3000/api/health >/dev/null || exit 1
+
 ENTRYPOINT ["/usr/bin/dumb-init", "--"]
-CMD ["npm", "run", "start"]
+CMD ["/usr/local/bin/iptv-proxy-entrypoint"]

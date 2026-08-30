@@ -12,25 +12,25 @@ services:
     ports:
       - "3000:3000"
     environment:
-      - NODE_ENV=production
-      - DATABASE_PATH=/data/iptv-proxy.db
-      - JWT_SECRET=change-me-to-a-secure-random-32-byte-hex-key
-      - INITIAL_ADMIN_USERNAME=admin
-      - INITIAL_ADMIN_PASSWORD=admin
+      NODE_ENV: production
+      DATABASE_PATH: /data/iptv-proxy.db
+      SESSION_SECRET: ${SESSION_SECRET:-}
+      APP_URL: ${APP_URL:-}
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+      INITIAL_ADMIN_USERNAME: ${INITIAL_ADMIN_USERNAME:-admin}
+      INITIAL_ADMIN_PASSWORD: ${INITIAL_ADMIN_PASSWORD:-}
+      VPN_BYPASS_TCP_PORTS: ${VPN_BYPASS_TCP_PORTS:-3000,8080}
+      VPN_CONNECT_TIMEOUT_SECONDS: ${VPN_CONNECT_TIMEOUT_SECONDS:-45}
     volumes:
       - ./data:/data
-      - ./vpn_configs:/etc/wireguard
+      - ./vpn_configs/wireguard:/etc/wireguard
+      - ./vpn_configs/openvpn:/etc/openvpn
     sysctls:
-      - net.ipv4.ip_forward=1
-      - net.ipv4.conf.all.src_valid_mark=1
-
-# Optional high-throughput Go streaming proxy companion (future expansion)
-#  iptv-proxy-engine:
-#    image: golang:1.24-alpine
-#    container_name: iptv-proxy-engine
-#    restart: unless-stopped
-#    network_mode: "service:iptv-proxy-admin"
-#    volumes:
-#      - ./data:/data:ro
-#    ports:
-#      - "8080:8080"
+      net.ipv4.ip_forward: "1"
+      net.ipv4.conf.all.src_valid_mark: "1"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:3000/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s

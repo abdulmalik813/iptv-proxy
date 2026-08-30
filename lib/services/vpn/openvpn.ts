@@ -1,16 +1,49 @@
-import { spawn, ChildProcess } from 'child_process';
+import { spawn, type ChildProcess } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
 import { getDb, initDatabase } from '../../db';
-import { OpenvpnProfile, OpenvpnSource } from '../../db/schema';
+import { OpenvpnProfile, OpenvpnProfileSummary, OpenvpnSource } from '../../db/schema';
 import { LogService } from '../log.service';
 
 const RUNTIME_DIR = '/tmp/vpn/openvpn';
 const PID_FILE = path.join(RUNTIME_DIR, 'openvpn.pid');
 const LOG_FILE = path.join(RUNTIME_DIR, 'openvpn.log');
+const CONFIG_FILE = path.join(RUNTIME_DIR, 'client.ovpn');
+const AUTH_FILE = path.join(RUNTIME_DIR, 'auth.txt');
 
 let activeOpenvpnProcess: ChildProcess | null = null;
+
+const EXECUTION_DIRECTIVES = new Set([
+  'up',
+  'down',
+  'route-up',
+  'ipchange',
+  'client-connect',
+  'client-disconnect',
+  'learn-address',
+  'auth-user-pass-verify',
+  'tls-verify',
+  'plugin',
+]);
+
+const MANAGED_DIRECTIVES = new Set([
+  'auth-user-pass',
+  'script-security',
+  'daemon',
+  'writepid',
+  'log',
+  'log-append',
+  'status',
+  'management',
+  'management-client',
+  'management-query-passwords',
+  'management-hold',
+  'cd',
+  'chroot',
+  'user',
+  'group',
+]);
 
 export interface OpenvpnValidationResult {
   valid: boolean;
@@ -20,16 +53,33 @@ export interface OpenvpnValidationResult {
   dev?: string;
 }
 
+function firstToken(line: string): string {
+  return line.trim().split(/\s+/)[0]?.toLowerCase() || '';
+}
+
 export function validateOpenvpnConfig(rawConfig: string): OpenvpnValidationResult {
-  const lines = rawConfig.split('\n').map((l) => l.trim());
+  if (rawConfig.length > 1_000_000) {
+    return { valid: false, error: 'OpenVPN configuration is too large.', remotes: [] };
+  }
+
+  const lines = rawConfig.split(/\r?\n/);
   const remotes: string[] = [];
   let proto = 'udp';
   let dev = 'tun';
 
-  for (const line of lines) {
-    if (line.startsWith('#') || line.startsWith(';') || !line) continue;
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith('#') || line.startsWith(';') || line.startsWith('<')) continue;
     const parts = line.split(/\s+/);
-    const directive = parts[0]?.toLowerCase();
+    const directive = parts[0]?.toLowerCase() || '';
+
+    if (EXECUTION_DIRECTIVES.has(directive)) {
+      return {
+        valid: false,
+        error: `OpenVPN directive "${directive}" is not allowed because profiles may not execute external commands or plugins.`,
+        remotes,
+      };
+    }
 
     if (directive === 'remote' && parts[1]) {
       remotes.push(`${parts[1]}:${parts[2] || '1194'}`);
@@ -40,57 +90,95 @@ export function validateOpenvpnConfig(rawConfig: string): OpenvpnValidationResul
     }
   }
 
-  if (remotes.length === 0 && !rawConfig.includes('<connection>')) {
-    return { valid: false, error: 'Configuration does not specify any remote server endpoint', remotes };
+  if (!remotes.length && !rawConfig.includes('<connection>')) {
+    return { valid: false, error: 'Configuration does not specify a remote server endpoint.', remotes };
+  }
+  if (!dev.startsWith('tun')) {
+    return { valid: false, error: 'Only TUN-mode OpenVPN profiles are supported.', remotes, proto, dev };
   }
 
+  return { valid: true, remotes, proto, dev };
+}
+
+function sanitizeRuntimeConfig(rawConfig: string): string {
+  return rawConfig
+    .split(/\r?\n/)
+    .filter((rawLine) => {
+      const line = rawLine.trim();
+      if (!line || line.startsWith('#') || line.startsWith(';') || line.startsWith('<')) return true;
+      const directive = firstToken(line);
+      return !EXECUTION_DIRECTIVES.has(directive) && !MANAGED_DIRECTIVES.has(directive);
+    })
+    .join('\n')
+    .trim();
+}
+
+function rowToProfile(row: Record<string, unknown>, includePassword: boolean): OpenvpnProfile {
   return {
-    valid: true,
-    remotes,
-    proto,
-    dev,
+    id: String(row.id),
+    name: String(row.name),
+    config: String(row.config),
+    username: row.username ? String(row.username) : null,
+    password: row.password ? (includePassword ? String(row.password) : '••••••••') : null,
+    source: (row.source as OpenvpnSource) || 'uploaded',
+    enabled: Number(row.enabled ?? 1),
+    created_at: String(row.created_at),
+    updated_at: String(row.updated_at),
   };
 }
 
-export class OpenvpnService {
-  static async getAllProfiles(): Promise<OpenvpnProfile[]> {
-    await initDatabase();
-    const db = getDb();
-    const res = await db.execute('SELECT * FROM openvpn_profiles ORDER BY name ASC');
+function readLogTail(max = 4_000): string {
+  try {
+    if (!fs.existsSync(LOG_FILE)) return '';
+    const contents = fs.readFileSync(LOG_FILE, 'utf8');
+    return contents.slice(-max);
+  } catch {
+    return '';
+  }
+}
 
-    return res.rows.map((row) => ({
-      id: String(row.id),
-      name: String(row.name),
-      config: String(row.config),
-      username: row.username ? String(row.username) : null,
-      password: row.password ? '••••••••' : null,
-      source: (row.source as OpenvpnSource) || 'uploaded',
-      enabled: Number(row.enabled ?? 1),
-      created_at: String(row.created_at),
-      updated_at: String(row.updated_at),
-    }));
+function pidIsAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export class OpenvpnService {
+  static toSummary(profile: OpenvpnProfile): OpenvpnProfileSummary {
+    const validation = validateOpenvpnConfig(profile.config);
+    return {
+      id: profile.id,
+      name: profile.name,
+      remotes: validation.remotes.slice(0, 3),
+      proto: validation.proto || null,
+      dev: validation.dev || null,
+      hasCredentials: Boolean(profile.username || profile.password),
+      source: profile.source,
+      enabled: profile.enabled,
+      created_at: profile.created_at,
+      updated_at: profile.updated_at,
+    };
+  }
+
+  static async getAllProfiles(includePassword = false): Promise<OpenvpnProfile[]> {
+    await initDatabase();
+    const res = await getDb().execute('SELECT * FROM openvpn_profiles ORDER BY name ASC');
+    return res.rows.map((row) => rowToProfile(row as unknown as Record<string, unknown>, includePassword));
+  }
+
+  static async getAllProfileSummaries(): Promise<OpenvpnProfileSummary[]> {
+    return (await this.getAllProfiles(false)).map((profile) => this.toSummary(profile));
   }
 
   static async getProfileById(id: string, includePassword = false): Promise<OpenvpnProfile | null> {
     await initDatabase();
-    const db = getDb();
-    const res = await db.execute({
-      sql: 'SELECT * FROM openvpn_profiles WHERE id = ?',
-      args: [id],
-    });
-    if (res.rows.length === 0) return null;
-    const row = res.rows[0];
-    return {
-      id: String(row.id),
-      name: String(row.name),
-      config: String(row.config),
-      username: row.username ? String(row.username) : null,
-      password: row.password ? (includePassword ? String(row.password) : '••••••••') : null,
-      source: (row.source as OpenvpnSource) || 'uploaded',
-      enabled: Number(row.enabled ?? 1),
-      created_at: String(row.created_at),
-      updated_at: String(row.updated_at),
-    };
+    const res = await getDb().execute({ sql: 'SELECT * FROM openvpn_profiles WHERE id = ?', args: [id] });
+    return res.rows.length
+      ? rowToProfile(res.rows[0] as unknown as Record<string, unknown>, includePassword)
+      : null;
   }
 
   static async createProfile(input: {
@@ -101,37 +189,38 @@ export class OpenvpnService {
     source?: OpenvpnSource;
   }): Promise<OpenvpnProfile> {
     const validation = validateOpenvpnConfig(input.config);
-    if (!validation.valid) {
-      throw new Error(`Invalid OpenVPN configuration: ${validation.error}`);
-    }
+    if (!validation.valid) throw new Error(`Invalid OpenVPN configuration: ${validation.error}`);
 
     await initDatabase();
-    const db = getDb();
     const id = crypto.randomUUID();
     const now = new Date().toISOString();
-    const source: OpenvpnSource = input.source || 'uploaded';
+    const name = input.name.trim();
+    if (!name) throw new Error('Profile name is required.');
 
-    await db.execute({
+    await getDb().execute({
       sql: `INSERT INTO openvpn_profiles (id, name, config, username, password, source, enabled, created_at, updated_at)
             VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)`,
       args: [
         id,
-        input.name.trim(),
+        name,
         input.config.trim(),
-        input.username ? input.username.trim() : null,
+        input.username?.trim() || null,
         input.password || null,
-        source,
+        input.source || 'uploaded',
         now,
         now,
       ],
     });
 
-    await LogService.info('openvpn', 'profile', `OpenVPN profile "${input.name.trim()}" created (${source}).`, {
+    await LogService.info('openvpn', 'profile', `OpenVPN profile "${name}" created.`, {
       profile_id: id,
+      source: input.source || 'uploaded',
       remotes: validation.remotes,
     });
 
-    return (await this.getProfileById(id))!;
+    const created = await this.getProfileById(id, true);
+    if (!created) throw new Error('OpenVPN profile could not be reloaded.');
+    return created;
   }
 
   static async updateProfile(
@@ -145,156 +234,175 @@ export class OpenvpnService {
     }
   ): Promise<OpenvpnProfile> {
     const existing = await this.getProfileById(id, true);
-    if (!existing) throw new Error('OpenVPN profile not found');
+    if (!existing) throw new Error('OpenVPN profile not found.');
 
-    if (input.config) {
+    if (input.config !== undefined) {
       const validation = validateOpenvpnConfig(input.config);
-      if (!validation.valid) {
-        throw new Error(`Invalid OpenVPN configuration: ${validation.error}`);
-      }
+      if (!validation.valid) throw new Error(`Invalid OpenVPN configuration: ${validation.error}`);
     }
 
-    await initDatabase();
-    const db = getDb();
+    const name = input.name !== undefined ? input.name.trim() : existing.name;
+    if (!name) throw new Error('Profile name cannot be empty.');
+    const config = input.config !== undefined ? input.config.trim() : existing.config;
+    const username = input.username !== undefined ? input.username?.trim() || null : existing.username;
+    const password =
+      input.password !== undefined
+        ? input.password === '••••••••'
+          ? existing.password
+          : input.password
+        : existing.password;
+    const enabled = input.enabled !== undefined ? (input.enabled ? 1 : 0) : existing.enabled;
     const now = new Date().toISOString();
 
-    const name = input.name !== undefined ? input.name.trim() : existing.name;
-    const config = input.config !== undefined ? input.config.trim() : existing.config;
-    const username = input.username !== undefined ? (input.username ? input.username.trim() : null) : existing.username;
-    const password = input.password !== undefined
-      ? (input.password === '••••••••' ? existing.password : input.password)
-      : existing.password;
-    const enabled = input.enabled !== undefined ? (input.enabled ? 1 : 0) : existing.enabled;
-
-    await db.execute({
-      sql: `UPDATE openvpn_profiles SET name = ?, config = ?, username = ?, password = ?, enabled = ?, updated_at = ? WHERE id = ?`,
+    await getDb().execute({
+      sql: `UPDATE openvpn_profiles
+            SET name = ?, config = ?, username = ?, password = ?, enabled = ?, updated_at = ?
+            WHERE id = ?`,
       args: [name, config, username, password, enabled, now, id],
     });
 
     await LogService.info('openvpn', 'profile', `OpenVPN profile "${name}" updated.`, { profile_id: id });
-    return (await this.getProfileById(id))!;
+    const updated = await this.getProfileById(id, true);
+    if (!updated) throw new Error('OpenVPN profile could not be reloaded.');
+    return updated;
   }
 
   static async deleteProfile(id: string): Promise<void> {
-    await initDatabase();
-    const db = getDb();
-    const existing = await this.getProfileById(id);
-    if (!existing) throw new Error('Profile not found');
-
-    await db.execute({
-      sql: 'DELETE FROM openvpn_profiles WHERE id = ?',
-      args: [id],
-    });
-
+    const existing = await this.getProfileById(id, false);
+    if (!existing) throw new Error('OpenVPN profile not found.');
+    await getDb().execute({ sql: 'DELETE FROM openvpn_profiles WHERE id = ?', args: [id] });
     await LogService.warn('openvpn', 'profile', `OpenVPN profile "${existing.name}" deleted.`, { profile_id: id });
   }
 
-  /**
-   * Starts an OpenVPN connection
-   */
   static async startConnection(profile: OpenvpnProfile): Promise<{ success: boolean; error?: string }> {
     try {
-      if (!fs.existsSync(RUNTIME_DIR)) {
-        fs.mkdirSync(RUNTIME_DIR, { recursive: true });
+      fs.mkdirSync(RUNTIME_DIR, { recursive: true, mode: 0o700 });
+      for (const file of [PID_FILE, LOG_FILE, CONFIG_FILE, AUTH_FILE]) {
+        try {
+          if (fs.existsSync(file)) fs.unlinkSync(file);
+        } catch {
+          // Best effort cleanup.
+        }
       }
 
-      // Write config to temp file
-      const configPath = path.join(RUNTIME_DIR, 'client.ovpn');
-      let configContent = profile.config;
-
-      // Handle user/pass if provided
-      let authFilePath: string | null = null;
-      if (profile.username && profile.password) {
-        authFilePath = path.join(RUNTIME_DIR, 'auth.txt');
-        fs.writeFileSync(authFilePath, `${profile.username}\n${profile.password}\n`, { mode: 0o600 });
-      }
-
-      // Strip dangerous commands and add route preservation
-      fs.writeFileSync(configPath, configContent, { mode: 0o600 });
+      fs.writeFileSync(CONFIG_FILE, sanitizeRuntimeConfig(profile.config), { mode: 0o600 });
 
       const args = [
         '--config',
-        configPath,
+        CONFIG_FILE,
         '--writepid',
         PID_FILE,
         '--log',
         LOG_FILE,
         '--script-security',
+        '1',
+        '--auth-nocache',
+        '--connect-retry-max',
         '2',
+        '--connect-timeout',
+        '10',
       ];
 
-      if (authFilePath) {
-        args.push('--auth-user-pass', authFilePath);
+      if (profile.username && profile.password) {
+        fs.writeFileSync(AUTH_FILE, `${profile.username}\n${profile.password}\n`, { mode: 0o600 });
+        args.push('--auth-user-pass', AUTH_FILE);
       }
 
-      const proc = spawn('openvpn', args, {
-        detached: true,
-        stdio: 'ignore',
+      const proc = spawn('openvpn', args, { detached: true, stdio: 'ignore' });
+      let spawnError: Error | null = null;
+      proc.once('error', (error) => {
+        spawnError = error;
       });
-
       activeOpenvpnProcess = proc;
       proc.unref();
 
-      // Wait a few seconds to verify it launched and didn't immediately exit
-      await new Promise((r) => setTimeout(r, 2000));
+      const timeoutSeconds = Math.max(10, Math.min(120, Number(process.env.VPN_CONNECT_TIMEOUT_SECONDS || 45)));
+      const deadline = Date.now() + timeoutSeconds * 1_000;
 
-      if (fs.existsSync(PID_FILE)) {
-        return { success: true };
-      } else if (fs.existsSync(LOG_FILE)) {
-        const logs = fs.readFileSync(LOG_FILE, 'utf-8');
-        return { success: false, error: logs.slice(-500) || 'OpenVPN failed to create PID file' };
+      while (Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 500));
+        if (spawnError) return { success: false, error: `Unable to launch OpenVPN: ${spawnError.message}` };
+
+        const tail = readLogTail();
+        if (tail.includes('Initialization Sequence Completed')) return { success: true };
+
+        if (
+          /AUTH_FAILED|Options error:|Exiting due to fatal error|Cannot load|Error opening configuration|TLS Error: TLS key negotiation failed/i.test(
+            tail
+          )
+        ) {
+          return { success: false, error: tail.slice(-1_500) || 'OpenVPN reported a connection failure.' };
+        }
+
+        if (fs.existsSync(PID_FILE)) {
+          const pid = Number.parseInt(fs.readFileSync(PID_FILE, 'utf8').trim(), 10);
+          if (Number.isInteger(pid) && !pidIsAlive(pid)) {
+            return { success: false, error: tail.slice(-1_500) || 'OpenVPN process exited before connecting.' };
+          }
+        }
       }
 
-      return { success: true };
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      return { success: false, error: msg };
+      return { success: false, error: `OpenVPN did not become ready within ${timeoutSeconds} seconds. ${readLogTail(1_000)}`.trim() };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return { success: false, error: message };
     }
   }
 
-  /**
-   * Stops active OpenVPN connection cleanly
-   */
+  static async isConnectionActive(): Promise<boolean> {
+    try {
+      if (!fs.existsSync(PID_FILE)) return false;
+      const pid = Number.parseInt(fs.readFileSync(PID_FILE, 'utf8').trim(), 10);
+      return Number.isInteger(pid) && pidIsAlive(pid) && readLogTail().includes('Initialization Sequence Completed');
+    } catch {
+      return false;
+    }
+  }
+
   static async stopConnection(): Promise<{ success: boolean; error?: string }> {
     try {
       if (activeOpenvpnProcess) {
         try {
           activeOpenvpnProcess.kill('SIGTERM');
         } catch {
-          // Process might already be closed
+          // It may already be gone.
         }
         activeOpenvpnProcess = null;
       }
 
       if (fs.existsSync(PID_FILE)) {
-        const pid = parseInt(fs.readFileSync(PID_FILE, 'utf-8').trim(), 10);
-        if (!isNaN(pid)) {
+        const pid = Number.parseInt(fs.readFileSync(PID_FILE, 'utf8').trim(), 10);
+        if (Number.isInteger(pid) && pidIsAlive(pid)) {
           try {
             process.kill(pid, 'SIGTERM');
-            // Allow 1s for graceful exit
-            await new Promise((r) => setTimeout(r, 1000));
-            process.kill(pid, 'SIGKILL');
           } catch {
-            // Already dead
+            // Already stopped.
+          }
+          const deadline = Date.now() + 3_000;
+          while (Date.now() < deadline && pidIsAlive(pid)) {
+            await new Promise((resolve) => setTimeout(resolve, 150));
+          }
+          if (pidIsAlive(pid)) {
+            try {
+              process.kill(pid, 'SIGKILL');
+            } catch {
+              // Already stopped.
+            }
           }
         }
-        fs.unlinkSync(PID_FILE);
       }
 
-      // Clean up auth and config files
-      const authFile = path.join(RUNTIME_DIR, 'auth.txt');
-      if (fs.existsSync(authFile)) {
+      for (const file of [PID_FILE, CONFIG_FILE, AUTH_FILE]) {
         try {
-          fs.unlinkSync(authFile);
+          if (fs.existsSync(file)) fs.unlinkSync(file);
         } catch {
-          // Ignore
+          // Ignore cleanup errors.
         }
       }
-
       return { success: true };
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      return { success: false, error: msg };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return { success: false, error: message };
     }
   }
 }

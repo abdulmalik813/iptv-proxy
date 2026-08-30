@@ -1,66 +1,98 @@
-# IPTV Proxy — Management & Core Orchestration Service
+# IPTV Reverse Proxy — Management Service
 
-A production-ready, self-hosted IPTV proxy management application built with **Next.js 15+ (App Router)**, **TypeScript**, **SQLite with WAL mode**, **Tailwind CSS**, and a **Single-Tunnel VPN Orchestration Engine**.
+Self-hosted IPTV proxy management application built with Next.js 16, TypeScript, Tailwind CSS, SQLite, and Docker. This repository currently implements the management and VPN-orchestration side only. The high-throughput IPTV streaming/proxy engine will be implemented separately in Go and is intentionally not part of this release.
 
----
+## Implemented
 
-## 🏛️ Core Architecture
+- Administrator first-run setup, login, logout, secure HTTP-only sessions, login rate limiting, and mutation-origin checks.
+- SQLite persistence with WAL mode and migrations for concurrent access by Next.js and the future Go service.
+- IPTV provider CRUD with upstream/local credentials, unique routes, exactly one default provider, enabled state, and per-provider metadata cache duration from 0–24 hours.
+- Provider route resolution contract for `/<route>/...` and default-provider fallback.
+- WireGuard profile import and connection management.
+- OpenVPN profile import, optional credentials, validation, and connection management.
+- VPNGate live server discovery with search/filter/sort, direct connection, and optional save-to-OpenVPN-profile behavior.
+- Cloudflare WARP registration, status, connection, disconnection, and reset through the native Linux client.
+- Single-tunnel mutex and persisted VPN state: `off`, `connecting`, `connected`, or `error`.
+- VPN route-preservation policy so replies from the admin service on port 3000 and the future Go proxy on port 8080 can remain reachable when a tunnel changes the default route.
+- Persistent audit/application logs with filtering, retention, and live Server-Sent Events. The SSE endpoint also tails SQLite so logs written later by the Go service can appear in the same live stream.
+- Minimal black/white square administration UI.
 
-The IPTV Proxy system is partitioned into two specialized services to ensure zero video degradation and high administrative reliability:
+## Not Implemented Yet
 
-1. **Next.js Management Application (This Service — Port 3000)**
-   - Administrative Dashboard & Web Interface.
-   - User authentication and session handling with JWT & HTTP-only cookies.
-   - SQLite database management and migration runner.
-   - IPTV provider configuration, route normalization, and credential translation.
-   - VPN profile management (WireGuard, OpenVPN, VPNGate, Cloudflare WARP).
-   - VPN process orchestration, state machine transitions, and egress IP verification.
-   - Real-time audit logging via Server-Sent Events (SSE).
-   - **Crucial Boundary:** Next.js *never* proxies or decodes IPTV video streams.
+The Go IPTV proxy/streaming engine is deliberately deferred. Next.js does not proxy live TV, VOD, series, catch-up, M3U, XMLTV, or Xtream stream payloads. The future Go service will read `/data/iptv-proxy.db`, resolve provider routes, apply local/upstream credential translation, and perform the actual IPTV proxying.
 
-2. **Go IPTV Streaming Engine (Companion Service — Port 8080)**
-   - High-throughput, zero-allocation video stream forwarding (TS/M3U8).
-   - Reads provider configurations and routes directly from the shared SQLite database (`/data/iptv-proxy.db`) in WAL mode.
-   - In-memory metadata caching for Xtream Codes and M3U playlists.
+## Requirements
 
----
+- Docker Engine on Linux for production VPN operation.
+- `/dev/net/tun` available on the Docker host.
+- `NET_ADMIN` capability for the management container.
+- Internet access for VPNGate, WARP registration, and public-IP verification.
 
-## 🧭 IPTV Provider Path-Based Routing Engine
+Docker Desktop can be used for development, but VPN routing behavior depends on the Docker/VM networking environment and may differ from a native Linux server.
 
-Clients (e.g., TiviMate, IPTV Smarters, VLC) connect to the proxy using standard Xtream Codes formats:
+## Start with Docker Compose
 
+Copy the environment template:
+
+```bash
+cp .env.example .env
 ```
-http://<proxy-ip>:8080/<route>/player_api.php?username=<local_user>&password=<local_pass>
-http://<proxy-ip>:8080/<route>/live/<local_user>/<local_pass>/12345.ts
+
+For direct HTTP testing on localhost, keep:
+
+```env
+COOKIE_SECURE=false
 ```
 
-### Route Resolution Priority
+For an HTTPS production deployment, set your public origin and secure cookies:
 
-1. **Matched Route (`/<route>/...`)**: The first segment matches a provider's unique route (e.g. `/bedroom/...`). The route segment is stripped and the request forwards to that provider's upstream host with upstream credentials substituted in-flight.
-2. **Default Provider Fallback**: Requests without a route prefix (e.g. `/player_api.php`, `/get.php`, `/live/...`) route automatically to the designated **Default Provider**.
-3. **Rejection (404/401)**: If no route matches and no default provider is configured, or if local credentials are invalid.
+```env
+APP_URL=https://iptv.example.com
+COOKIE_SECURE=true
+```
 
----
+`SESSION_SECRET` is optional. If left blank, the app generates a cryptographically random secret on first startup and persists it as `/data/.session-secret`. You can provide your own with:
 
-## 🛡️ Single-Tunnel VPN Orchestration Engine
+```bash
+openssl rand -hex 32
+```
 
-The VPN Manager implements a serialized state machine governed by an asynchronous Mutex to guarantee **strictly one active VPN connection** at any time.
+You have two choices for the first administrator account:
 
-| VPN Protocol | Implementation Details |
-| :--- | :--- |
-| **WireGuard** | Loads `.conf` profiles, invokes `wg-quick up/down`, manages routing tables via `ip rule` to avoid losing admin port connectivity. |
-| **OpenVPN** | Loads `.ovpn` profiles, writes temporary runtime configs, manages background daemon with PID tracking and graceful SIGTERM/SIGKILL. |
-| **VPNGate** | Live fetching and parsing of public OpenVPN mirrors from University of Tsukuba CSV mirrors. 1-click import into permanent profiles. |
-| **Cloudflare WARP** | Integrates with native `warp-cli` (registration, connect, disconnect, device status). |
+1. Leave `INITIAL_ADMIN_PASSWORD` blank and use the browser first-run setup screen.
+2. Set `INITIAL_ADMIN_USERNAME` and `INITIAL_ADMIN_PASSWORD` before first boot to seed the account automatically.
 
-### Egress IP Verification
-Every connection attempt verifies real-world egress connectivity and retrieves public IP and country data from external providers before confirming the `connected` state.
+Then start the service:
 
----
+```bash
+docker compose up -d --build
+```
 
-## 🗄️ Database & WAL Mode
+Open `http://localhost:3000` unless a reverse proxy/domain is configured.
 
-The system uses SQLite via `@libsql/client` with **Write-Ahead Logging (WAL)** enabled for concurrent access by both Next.js and the Go engine:
+## Development Container
+
+The repository includes `.devcontainer/devcontainer.json` and `.devcontainer/Dockerfile`. It installs Node 22, pnpm, WireGuard, OpenVPN, networking tools, D-Bus, and Cloudflare WARP.
+
+The Dev Container is intentionally run as root because real VPN operations require network-administration privileges and because the persisted `node_modules` Docker volume otherwise commonly becomes root-owned and causes `EACCES` during package installation.
+
+After opening the repository in the Dev Container:
+
+```bash
+pnpm dev
+```
+
+Port 3000 is the Next.js management service. Port 8080 is reserved for the future Go proxy.
+
+## SQLite
+
+Default production database path:
+
+```text
+/data/iptv-proxy.db
+```
+
+The database uses:
 
 ```sql
 PRAGMA journal_mode = WAL;
@@ -68,43 +100,61 @@ PRAGMA synchronous = NORMAL;
 PRAGMA foreign_keys = ON;
 ```
 
-Database location defaults to `/data/iptv-proxy.db` (configurable via `DATABASE_PATH`).
+The schema includes users, IPTV providers, application/VPN settings, WireGuard profiles, OpenVPN profiles, logs, and schema migrations.
 
----
+Only one provider can be marked default. Provider `cache_duration_hours` is constrained to 0–24.
 
-## 🚀 Quick Start with Docker
+## Provider Routing Contract
 
-### Prerequisites
-- Docker Engine with `NET_ADMIN` capabilities and `/dev/net/tun` support.
+Given a provider route `bedroom`, the future Go service will resolve:
 
-### Run with Docker Compose
-
-```bash
-docker compose up -d
+```text
+/bedroom/player_api.php
+/bedroom/get.php
+/bedroom/xmltv.php
+/bedroom/live/...
+/bedroom/movie/...
+/bedroom/series/...
 ```
 
-Open [http://localhost:3000](http://localhost:3000) in your browser.
+to that provider after removing the first route segment.
 
-- Default initial credentials:
-  - **Username:** `admin`
-  - **Password:** `admin` (or configured via environment variables)
+Requests without a provider route, such as:
 
----
+```text
+/player_api.php
+/get.php
+/xmltv.php
+/live/...
+```
 
-## ⚙️ Environment Configuration
+fall back to the one configured default provider.
 
-| Variable | Default | Description |
-| :--- | :--- | :--- |
-| `PORT` | `3000` | HTTP port for the Next.js administration console |
-| `DATABASE_PATH` | `/data/iptv-proxy.db` | Absolute path to the SQLite database file |
-| `JWT_SECRET` | auto-generated fallback | 32-byte secret for signing session tokens |
-| `INITIAL_ADMIN_USERNAME` | `admin` | Default username for the initial admin account |
-| `INITIAL_ADMIN_PASSWORD` | `admin` | Default password for the initial admin account |
+## VPN Security
 
----
+WireGuard `PreUp`, `PostUp`, `PreDown`, and `PostDown` hooks are rejected so uploaded profiles cannot execute arbitrary shell commands.
 
-## 📜 Design Language & System UI
+OpenVPN profiles that contain executable script hooks, plugins, or authentication-verification commands are rejected. The service only supports TUN-mode profiles.
 
-- **Aesthetic:** Minimalist, high-contrast, black-and-white, square-bordered server administration console.
-- **Real-Time Logging:** Live Server-Sent Events stream with level filters, source filters, auto-scroll toggle, and JSON export.
-- **Security:** Automatic sanitization of passwords, tokens, and private keys in all persistent logs and UI responses.
+WireGuard private keys and OpenVPN configuration/password values remain server-side and are not returned by normal profile-list/read APIs.
+
+A VPN is not marked `connected` simply because a process started. The manager checks the process/interface and verifies external connectivity before persisting connected state.
+
+## WARP Persistence
+
+The container starts D-Bus and `warp-svc` itself because normal Docker containers do not run systemd. WARP registration state is persisted under `/data/warp` by the container entrypoint.
+
+## Logs
+
+Logs are stored in SQLite and can be filtered by level, source, category, and text. Supported levels are:
+
+- `debug`
+- `info`
+- `warning`
+- `error`
+
+Sensitive fields such as passwords, tokens, cookies, private keys, authorization values, and raw configuration objects are redacted before log persistence.
+
+## Package Manager
+
+This project uses pnpm only. Bun/npm lockfiles and AI Studio scaffolding are intentionally not part of the project.

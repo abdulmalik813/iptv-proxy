@@ -1,9 +1,11 @@
 import { SettingsService } from '../settings.service';
 import { LogService } from '../log.service';
-import { VpnStatus, VpnType } from '../../db/schema';
+import { OpenvpnProfile, VpnStatus, VpnType } from '../../db/schema';
 import { WireguardService } from './wireguard';
 import { OpenvpnService } from './openvpn';
 import { WarpService } from './warp';
+import { VpnGateService } from './vpngate';
+import { RoutingService } from './routing';
 
 interface VpnPublicIpInfo {
   ip: string;
@@ -11,375 +13,427 @@ interface VpnPublicIpInfo {
   loc?: string;
 }
 
-// Mutex for sequential execution of VPN operations
 class Mutex {
-  private isLocked = false;
+  private locked = false;
   private queue: Array<() => void> = [];
 
   async acquire(): Promise<() => void> {
-    if (!this.isLocked) {
-      this.isLocked = true;
+    if (!this.locked) {
+      this.locked = true;
       return () => this.release();
     }
-
     return new Promise((resolve) => {
       this.queue.push(() => {
-        this.isLocked = true;
+        this.locked = true;
         resolve(() => this.release());
       });
     });
   }
 
   get isBusy(): boolean {
-    return this.isLocked;
+    return this.locked;
   }
 
-  private release() {
-    if (this.queue.length > 0) {
-      const next = this.queue.shift();
-      if (next) next();
-    } else {
-      this.isLocked = false;
-    }
+  private release(): void {
+    const next = this.queue.shift();
+    if (next) next();
+    else this.locked = false;
   }
 }
 
 const vpnLock = new Mutex();
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 export class VpnManager {
   static isOperationInProgress(): boolean {
     return vpnLock.isBusy;
   }
 
-  /**
-   * Verifies external IP and connectivity
-   */
-  static async verifyConnectivity(timeoutMs = 6000): Promise<VpnPublicIpInfo | null> {
+  static async verifyConnectivity(timeoutMs = 6_000): Promise<VpnPublicIpInfo | null> {
     const endpoints = [
-      'https://api.ipify.org?format=json',
-      'https://ipinfo.io/json',
-      'https://cloudflare.com/cdn-cgi/trace',
+      { url: 'https://ipinfo.io/json', kind: 'json' as const },
+      { url: 'https://api.ipify.org?format=json', kind: 'json' as const },
+      { url: 'https://www.cloudflare.com/cdn-cgi/trace', kind: 'trace' as const },
     ];
 
-    for (const url of endpoints) {
+    for (const endpoint of endpoints) {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), timeoutMs);
       try {
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
-
-        const res = await fetch(url, {
+        const response = await fetch(endpoint.url, {
           signal: controller.signal,
-          headers: { 'User-Agent': 'IPTV-Proxy-VPN-Probe/1.0' },
           cache: 'no-store',
+          headers: { 'User-Agent': 'IPTV-Proxy-VPN-Probe/1.0' },
         });
-        clearTimeout(timeoutId);
+        if (!response.ok) continue;
 
-        if (res.ok) {
-          if (url.includes('json')) {
-            const data = await res.json();
-            return {
-              ip: data.ip || 'Unknown',
-              country: data.country || 'Unknown',
-              loc: data.city ? `${data.city}, ${data.country}` : undefined,
-            };
-          } else {
-            // cloudflare trace
-            const text = await res.text();
-            const ipMatch = text.match(/ip=([^\n]+)/);
-            const locMatch = text.match(/loc=([^\n]+)/);
-            return {
-              ip: ipMatch ? ipMatch[1].trim() : 'Active',
-              country: locMatch ? locMatch[1].trim() : undefined,
-            };
-          }
+        if (endpoint.kind === 'json') {
+          const data = (await response.json()) as { ip?: string; country?: string; city?: string };
+          if (!data.ip) continue;
+          return {
+            ip: data.ip,
+            country: data.country,
+            loc: data.city && data.country ? `${data.city}, ${data.country}` : undefined,
+          };
         }
+
+        const text = await response.text();
+        const ip = text.match(/^ip=(.+)$/m)?.[1]?.trim();
+        if (ip) return { ip, country: text.match(/^loc=(.+)$/m)?.[1]?.trim() };
       } catch {
-        // try next endpoint
+        // Try the next independent endpoint.
+      } finally {
+        clearTimeout(timeout);
       }
     }
-
     return null;
   }
 
-  /**
-   * Disconnects whichever VPN is active
-   */
+  private static async stopAllTunnels(): Promise<void> {
+    await WireguardService.stopConnection();
+    await OpenvpnService.stopConnection();
+    await WarpService.disconnect();
+    await sleep(400);
+  }
+
+  private static async prepareForConnection(): Promise<VpnPublicIpInfo | null> {
+    await this.stopAllTunnels();
+    await RoutingService.cleanupBypassRouting();
+    const baseline = await this.verifyConnectivity(5_000);
+    await RoutingService.prepareBypassRouting();
+    return baseline;
+  }
+
+  private static async markError(type: VpnType, profileId: string | null, label: string | null, message: string): Promise<void> {
+    await SettingsService.updateVpnState({
+      active_vpn_type: type,
+      active_vpn_profile_id: profileId,
+      active_vpn_label: label,
+      vpn_status: 'error',
+      vpn_last_error: message,
+      vpn_connected_at: null,
+      vpn_public_ip: null,
+      vpn_country: null,
+    });
+  }
+
   static async disconnect(reason = 'User requested disconnect'): Promise<{ success: boolean; error?: string }> {
     const release = await vpnLock.acquire();
-
     try {
-      const settings = await SettingsService.getSettings();
-      const previousType = settings.active_vpn_type;
-
-      if (previousType === 'off' && settings.vpn_status === 'off') {
-        return { success: true };
+      const current = await SettingsService.getSettings();
+      if (current.vpn_status !== 'off' || current.active_vpn_type !== 'off') {
+        await LogService.info('vpn', 'disconnect', `Disconnecting ${current.active_vpn_label || current.active_vpn_type}.`, {
+          reason,
+        });
       }
 
-      await LogService.info('vpn', 'disconnect', `Disconnecting active VPN (${previousType}). Reason: ${reason}`);
-
-      // Stop WireGuard
-      await WireguardService.stopConnection();
-      // Stop OpenVPN
-      await OpenvpnService.stopConnection();
-      // Stop WARP
-      await WarpService.disconnect();
-
+      await this.stopAllTunnels();
+      await RoutingService.cleanupBypassRouting();
       await SettingsService.updateVpnState({
         active_vpn_type: 'off',
         active_vpn_profile_id: null,
+        active_vpn_label: null,
         vpn_status: 'off',
         vpn_last_error: null,
         vpn_connected_at: null,
         vpn_public_ip: null,
         vpn_country: null,
       });
-
-      await LogService.info('vpn', 'disconnected', 'VPN disconnected successfully. Network traffic restored to direct.');
+      await LogService.info('vpn', 'disconnected', 'VPN disconnected. Traffic is using the direct container route.');
       return { success: true };
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      await LogService.error('vpn', 'disconnect', `Error during VPN disconnection: ${msg}`);
-      return { success: false, error: msg };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      await LogService.error('vpn', 'disconnect', `VPN disconnect failed: ${message}`);
+      return { success: false, error: message };
     } finally {
       release();
     }
   }
 
-  /**
-   * Connects to a WireGuard profile
-   */
   static async connectWireguard(profileId: string): Promise<{ success: boolean; error?: string }> {
     const release = await vpnLock.acquire();
-
+    let label = 'WireGuard';
     try {
       const profile = await WireguardService.getProfileById(profileId);
-      if (!profile) {
-        throw new Error(`WireGuard profile ${profileId} not found`);
-      }
+      if (!profile) throw new Error('WireGuard profile not found.');
+      if (!profile.enabled) throw new Error('WireGuard profile is disabled.');
+      label = profile.name;
 
-      await LogService.info('wireguard', 'connecting', `Initiating WireGuard connection to "${profile.name}"...`);
-
-      // 1. Clean stop previous VPN
-      await WireguardService.stopConnection();
-      await OpenvpnService.stopConnection();
-      await WarpService.disconnect();
-
-      // 2. Set status to connecting
+      await LogService.info('wireguard', 'connecting', `Connecting WireGuard profile "${profile.name}".`);
+      const baseline = await this.prepareForConnection();
       await SettingsService.updateVpnState({
         active_vpn_type: 'wireguard',
         active_vpn_profile_id: profileId,
+        active_vpn_label: profile.name,
         vpn_status: 'connecting',
         vpn_last_error: null,
+        vpn_connected_at: null,
+        vpn_public_ip: null,
+        vpn_country: null,
       });
 
-      // 3. Start WireGuard
-      const startRes = await WireguardService.startConnection(profile);
-      if (!startRes.success) {
-        throw new Error(startRes.error || 'Failed to start WireGuard interface');
+      const started = await WireguardService.startConnection(profile);
+      if (!started.success) throw new Error(started.error || 'WireGuard failed to start.');
+
+      let ipInfo: VpnPublicIpInfo | null = null;
+      let handshake = false;
+      const deadline = Date.now() + 15_000;
+      while (Date.now() < deadline) {
+        ipInfo = await this.verifyConnectivity(4_000);
+        handshake = await WireguardService.hasRecentHandshake();
+        if (ipInfo && (handshake || !baseline || ipInfo.ip !== baseline.ip)) break;
+        await sleep(700);
       }
 
-      // 4. Verify connectivity
-      const ipInfo = await this.verifyConnectivity(8000);
+      if (!(await WireguardService.isConnectionActive())) throw new Error('WireGuard interface disappeared after startup.');
+      if (!ipInfo) throw new Error('WireGuard is up but external connectivity could not be verified.');
+      if (!handshake && baseline && ipInfo.ip === baseline.ip) {
+        throw new Error('WireGuard interface is up, but no peer handshake or VPN egress change was verified.');
+      }
 
-      // 5. Update state to connected
-      const now = new Date().toISOString();
+      const connectedAt = new Date().toISOString();
       await SettingsService.updateVpnState({
         vpn_status: 'connected',
-        vpn_connected_at: now,
-        vpn_public_ip: ipInfo?.ip || 'Connected (Protected)',
-        vpn_country: ipInfo?.country || null,
+        vpn_connected_at: connectedAt,
+        vpn_public_ip: ipInfo.ip,
+        vpn_country: ipInfo.country || null,
         vpn_last_error: null,
       });
-
-      await LogService.info(
-        'wireguard',
-        'connected',
-        `WireGuard tunnel established to "${profile.name}". Public IP: ${ipInfo?.ip || 'Verified'}`,
-        { profile_id: profileId, ip: ipInfo?.ip, country: ipInfo?.country }
-      );
-
-      return { success: true };
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      await WireguardService.stopConnection();
-
-      await SettingsService.updateVpnState({
-        vpn_status: 'error',
-        vpn_last_error: msg,
+      await LogService.info('wireguard', 'connected', `WireGuard connected to "${profile.name}".`, {
+        profile_id: profileId,
+        public_ip: ipInfo.ip,
+        country: ipInfo.country,
+        handshake_verified: handshake,
       });
-
-      await LogService.error('wireguard', 'connection_failure', `WireGuard connection failed: ${msg}`, {
+      return { success: true };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      await WireguardService.stopConnection();
+      await RoutingService.cleanupBypassRouting();
+      await this.markError('wireguard', profileId, label, message);
+      await LogService.error('wireguard', 'connection_failure', `WireGuard connection failed: ${message}`, {
         profile_id: profileId,
       });
-
-      return { success: false, error: msg };
+      return { success: false, error: message };
     } finally {
       release();
     }
   }
 
-  /**
-   * Connects to an OpenVPN profile
-   */
   static async connectOpenvpn(profileId: string): Promise<{ success: boolean; error?: string }> {
     const release = await vpnLock.acquire();
-
+    let label = 'OpenVPN';
     try {
       const profile = await OpenvpnService.getProfileById(profileId, true);
-      if (!profile) {
-        throw new Error(`OpenVPN profile ${profileId} not found`);
-      }
+      if (!profile) throw new Error('OpenVPN profile not found.');
+      if (!profile.enabled) throw new Error('OpenVPN profile is disabled.');
+      label = profile.name;
 
-      await LogService.info('openvpn', 'connecting', `Initiating OpenVPN connection to "${profile.name}"...`);
-
-      // 1. Clean stop previous VPN
-      await WireguardService.stopConnection();
-      await OpenvpnService.stopConnection();
-      await WarpService.disconnect();
-
-      // 2. Set status to connecting
+      await LogService.info('openvpn', 'connecting', `Connecting OpenVPN profile "${profile.name}".`);
+      await this.prepareForConnection();
       await SettingsService.updateVpnState({
         active_vpn_type: 'openvpn',
         active_vpn_profile_id: profileId,
+        active_vpn_label: profile.name,
         vpn_status: 'connecting',
         vpn_last_error: null,
+        vpn_connected_at: null,
+        vpn_public_ip: null,
+        vpn_country: null,
       });
 
-      // 3. Start OpenVPN
-      const startRes = await OpenvpnService.startConnection(profile);
-      if (!startRes.success) {
-        throw new Error(startRes.error || 'Failed to start OpenVPN process');
-      }
+      const started = await OpenvpnService.startConnection(profile);
+      if (!started.success) throw new Error(started.error || 'OpenVPN failed to start.');
+      if (!(await OpenvpnService.isConnectionActive())) throw new Error('OpenVPN process did not remain connected.');
 
-      // 4. Verify connectivity
-      const ipInfo = await this.verifyConnectivity(10000);
+      const ipInfo = await this.verifyConnectivity(8_000);
+      if (!ipInfo) throw new Error('OpenVPN connected but external connectivity could not be verified.');
 
-      // 5. Update state to connected
-      const now = new Date().toISOString();
       await SettingsService.updateVpnState({
         vpn_status: 'connected',
-        vpn_connected_at: now,
-        vpn_public_ip: ipInfo?.ip || 'Connected (Protected)',
-        vpn_country: ipInfo?.country || null,
+        vpn_connected_at: new Date().toISOString(),
+        vpn_public_ip: ipInfo.ip,
+        vpn_country: ipInfo.country || null,
         vpn_last_error: null,
       });
-
-      await LogService.info(
-        'openvpn',
-        'connected',
-        `OpenVPN tunnel established to "${profile.name}". Public IP: ${ipInfo?.ip || 'Verified'}`,
-        { profile_id: profileId, ip: ipInfo?.ip, country: ipInfo?.country }
-      );
-
-      return { success: true };
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      await OpenvpnService.stopConnection();
-
-      await SettingsService.updateVpnState({
-        vpn_status: 'error',
-        vpn_last_error: msg,
+      await LogService.info('openvpn', 'connected', `OpenVPN connected to "${profile.name}".`, {
+        profile_id: profileId,
+        public_ip: ipInfo.ip,
+        country: ipInfo.country,
       });
-
-      await LogService.error('openvpn', 'connection_failure', `OpenVPN connection failed: ${msg}`, {
+      return { success: true };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      await OpenvpnService.stopConnection();
+      await RoutingService.cleanupBypassRouting();
+      await this.markError('openvpn', profileId, label, message);
+      await LogService.error('openvpn', 'connection_failure', `OpenVPN connection failed: ${message}`, {
         profile_id: profileId,
       });
-
-      return { success: false, error: msg };
+      return { success: false, error: message };
     } finally {
       release();
     }
   }
 
-  /**
-   * Connects to Cloudflare WARP
-   */
+  static async connectVpnGateServer(serverId: string): Promise<{ success: boolean; error?: string }> {
+    const release = await vpnLock.acquire();
+    let label = 'VPNGate';
+    const runtimeId = `vpngate:${serverId}`;
+    try {
+      const server = await VpnGateService.getServerById(serverId);
+      if (!server) throw new Error('VPNGate server is no longer available. Refresh the server list.');
+      label = `VPNGate ${server.countryShort} ${server.ip}`;
+      const now = new Date().toISOString();
+      const profile: OpenvpnProfile = {
+        id: runtimeId,
+        name: label,
+        config: VpnGateService.decodeConfig(server.ovpnConfigBase64),
+        username: 'vpn',
+        password: 'vpn',
+        source: 'vpngate',
+        enabled: 1,
+        created_at: now,
+        updated_at: now,
+      };
+
+      await LogService.info('vpngate', 'connecting', `Connecting directly to ${label}.`, { server_id: serverId });
+      await this.prepareForConnection();
+      await SettingsService.updateVpnState({
+        active_vpn_type: 'openvpn',
+        active_vpn_profile_id: runtimeId,
+        active_vpn_label: label,
+        vpn_status: 'connecting',
+        vpn_last_error: null,
+        vpn_connected_at: null,
+        vpn_public_ip: null,
+        vpn_country: null,
+      });
+
+      const started = await OpenvpnService.startConnection(profile);
+      if (!started.success) throw new Error(started.error || 'VPNGate OpenVPN connection failed to start.');
+      if (!(await OpenvpnService.isConnectionActive())) throw new Error('VPNGate OpenVPN process did not remain connected.');
+
+      const ipInfo = await this.verifyConnectivity(8_000);
+      if (!ipInfo) throw new Error('VPNGate connected but external connectivity could not be verified.');
+
+      await SettingsService.updateVpnState({
+        vpn_status: 'connected',
+        vpn_connected_at: new Date().toISOString(),
+        vpn_public_ip: ipInfo.ip,
+        vpn_country: ipInfo.country || server.countryShort,
+        vpn_last_error: null,
+      });
+      await LogService.info('vpngate', 'connected', `Connected to ${label}.`, {
+        server_id: serverId,
+        public_ip: ipInfo.ip,
+      });
+      return { success: true };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      await OpenvpnService.stopConnection();
+      await RoutingService.cleanupBypassRouting();
+      await this.markError('openvpn', runtimeId, label, message);
+      await LogService.error('vpngate', 'connection_failure', `VPNGate connection failed: ${message}`, {
+        server_id: serverId,
+      });
+      return { success: false, error: message };
+    } finally {
+      release();
+    }
+  }
+
   static async connectWarp(): Promise<{ success: boolean; error?: string }> {
     const release = await vpnLock.acquire();
-
+    const label = 'Cloudflare WARP';
     try {
-      await LogService.info('warp', 'connecting', 'Initiating Cloudflare WARP connection...');
-
-      // 1. Clean stop previous VPN
-      await WireguardService.stopConnection();
-      await OpenvpnService.stopConnection();
-
-      // 2. Set status to connecting
+      await LogService.info('warp', 'connecting', 'Connecting Cloudflare WARP.');
+      await this.prepareForConnection();
       await SettingsService.updateVpnState({
         active_vpn_type: 'warp',
         active_vpn_profile_id: null,
+        active_vpn_label: label,
         vpn_status: 'connecting',
         vpn_last_error: null,
+        vpn_connected_at: null,
+        vpn_public_ip: null,
+        vpn_country: null,
       });
 
-      // 3. Connect WARP
-      const startRes = await WarpService.connect();
-      if (!startRes.success) {
-        throw new Error(startRes.error || 'Failed to connect Cloudflare WARP');
-      }
+      const started = await WarpService.connect();
+      if (!started.success) throw new Error(started.error || 'Cloudflare WARP failed to connect.');
+      const warpStatus = await WarpService.getStatus();
+      if (!warpStatus.connected) throw new Error('warp-cli did not report Connected state.');
 
-      // 4. Verify connectivity
-      const ipInfo = await this.verifyConnectivity(8000);
+      const ipInfo = await this.verifyConnectivity(8_000);
+      if (!ipInfo) throw new Error('WARP connected but external connectivity could not be verified.');
 
-      // 5. Update state to connected
-      const now = new Date().toISOString();
       await SettingsService.updateVpnState({
         vpn_status: 'connected',
-        vpn_connected_at: now,
-        vpn_public_ip: ipInfo?.ip || 'Cloudflare WARP Active',
-        vpn_country: ipInfo?.country || 'Cloudflare Anycast',
+        vpn_connected_at: new Date().toISOString(),
+        vpn_public_ip: ipInfo.ip,
+        vpn_country: ipInfo.country || null,
         vpn_last_error: null,
       });
-
-      await LogService.info(
-        'warp',
-        'connected',
-        `Cloudflare WARP tunnel connected. Public IP: ${ipInfo?.ip || 'Verified'}`,
-        { ip: ipInfo?.ip, country: ipInfo?.country }
-      );
-
-      return { success: true };
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      await WarpService.disconnect();
-
-      await SettingsService.updateVpnState({
-        vpn_status: 'error',
-        vpn_last_error: msg,
+      await LogService.info('warp', 'connected', 'Cloudflare WARP connected.', {
+        public_ip: ipInfo.ip,
+        country: ipInfo.country,
       });
-
-      await LogService.error('warp', 'connection_failure', `Cloudflare WARP connection failed: ${msg}`);
-
-      return { success: false, error: msg };
+      return { success: true };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      await WarpService.disconnect();
+      await RoutingService.cleanupBypassRouting();
+      await this.markError('warp', null, label, message);
+      await LogService.error('warp', 'connection_failure', `Cloudflare WARP connection failed: ${message}`);
+      return { success: false, error: message };
     } finally {
       release();
     }
   }
 
-  /**
-   * Quick status fetch with resolved profile name
-   */
+  private static async reconcileConnectedState(type: VpnType): Promise<boolean> {
+    if (type === 'wireguard') return WireguardService.isConnectionActive();
+    if (type === 'openvpn') return OpenvpnService.isConnectionActive();
+    if (type === 'warp') return (await WarpService.getStatus()).connected;
+    return false;
+  }
+
   static async getVpnStatusSummary(): Promise<{
     status: VpnStatus;
     type: VpnType;
     profileId: string | null;
     profileName: string | null;
-    connectedAt: string | null;
+    connectedSince: string | null;
     publicIp: string | null;
     country: string | null;
     lastError: string | null;
     isBusy: boolean;
   }> {
-    const settings = await SettingsService.getSettings();
-    let profileName: string | null = null;
+    let settings = await SettingsService.getSettings();
 
-    if (settings.active_vpn_type === 'wireguard' && settings.active_vpn_profile_id) {
-      const p = await WireguardService.getProfileById(settings.active_vpn_profile_id);
-      if (p) profileName = p.name;
-    } else if (settings.active_vpn_type === 'openvpn' && settings.active_vpn_profile_id) {
-      const p = await OpenvpnService.getProfileById(settings.active_vpn_profile_id);
-      if (p) profileName = p.name;
-    } else if (settings.active_vpn_type === 'warp') {
-      profileName = 'Cloudflare WARP Tunnel';
+    if (settings.vpn_status === 'connected' && !(await this.reconcileConnectedState(settings.active_vpn_type))) {
+      const message = 'Stored VPN state was connected, but the tunnel process/interface is no longer active.';
+      await SettingsService.updateVpnState({
+        vpn_status: 'error',
+        vpn_last_error: message,
+        vpn_connected_at: null,
+        vpn_public_ip: null,
+        vpn_country: null,
+      });
+      await LogService.warn('vpn', 'reconcile', message, { type: settings.active_vpn_type });
+      settings = await SettingsService.getSettings();
+    }
+
+    let profileName = settings.active_vpn_label;
+    if (!profileName && settings.active_vpn_type === 'wireguard' && settings.active_vpn_profile_id) {
+      profileName = (await WireguardService.getProfileById(settings.active_vpn_profile_id))?.name || null;
+    } else if (!profileName && settings.active_vpn_type === 'openvpn' && settings.active_vpn_profile_id) {
+      if (!settings.active_vpn_profile_id.startsWith('vpngate:')) {
+        profileName = (await OpenvpnService.getProfileById(settings.active_vpn_profile_id))?.name || null;
+      }
+    } else if (!profileName && settings.active_vpn_type === 'warp') {
+      profileName = 'Cloudflare WARP';
     }
 
     return {
@@ -387,7 +441,7 @@ export class VpnManager {
       type: settings.active_vpn_type,
       profileId: settings.active_vpn_profile_id,
       profileName,
-      connectedAt: settings.vpn_connected_at,
+      connectedSince: settings.vpn_connected_at,
       publicIp: settings.vpn_public_ip,
       country: settings.vpn_country,
       lastError: settings.vpn_last_error,

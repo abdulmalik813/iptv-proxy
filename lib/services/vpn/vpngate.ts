@@ -1,153 +1,141 @@
-import { VpnGateServer } from '../../db/schema';
+import crypto from 'crypto';
+import { PublicVpnGateServer, VpnGateServer } from '../../db/schema';
 import { LogService } from '../log.service';
 
-const VPNGATE_API_URLS = [
-  'http://www.vpngate.net/api/iphone/',
-  'https://www.vpngate.net/api/iphone/',
-];
-
+const VPNGATE_API_URL = 'https://www.vpngate.net/api/iphone/';
+const CACHE_TTL_MS = 5 * 60 * 1000;
 let cachedServers: VpnGateServer[] = [];
 let lastFetchTimestamp = 0;
-const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes cache
+
+function parseCsvLine(line: string): string[] {
+  const values: string[] = [];
+  let current = '';
+  let quoted = false;
+
+  for (let i = 0; i < line.length; i += 1) {
+    const char = line[i];
+    if (char === '"') {
+      if (quoted && line[i + 1] === '"') {
+        current += '"';
+        i += 1;
+      } else {
+        quoted = !quoted;
+      }
+    } else if (char === ',' && !quoted) {
+      values.push(current);
+      current = '';
+    } else {
+      current += char;
+    }
+  }
+  values.push(current);
+  return values;
+}
+
+function serverId(ip: string, hostname: string, config: string): string {
+  return crypto.createHash('sha256').update(`${ip}|${hostname}|${config}`).digest('hex').slice(0, 24);
+}
 
 export class VpnGateService {
-  /**
-   * Fetches the public VPNGate CSV mirror and parses server details
-   */
   static async fetchServers(forceRefresh = false): Promise<VpnGateServer[]> {
     const now = Date.now();
-    if (!forceRefresh && cachedServers.length > 0 && now - lastFetchTimestamp < CACHE_TTL_MS) {
+    if (!forceRefresh && cachedServers.length && now - lastFetchTimestamp < CACHE_TTL_MS) {
       return cachedServers;
     }
 
-    let rawCsv = '';
-    let lastError: Error | null = null;
-
-    for (const url of VPNGATE_API_URLS) {
-      try {
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 12000); // 12s timeout
-
-        const response = await fetch(url, {
-          signal: controller.signal,
-          headers: {
-            'User-Agent': 'IPTV-Proxy-Manager/1.0',
-          },
-        });
-        clearTimeout(timeoutId);
-
-        if (response.ok) {
-          rawCsv = await response.text();
-          if (rawCsv && rawCsv.includes('OpenVPN_ConfigData_Base64')) {
-            break;
-          }
-        }
-      } catch (err: unknown) {
-        lastError = err instanceof Error ? err : new Error(String(err));
-      }
-    }
-
-    if (!rawCsv) {
-      await LogService.error(
-        'vpngate',
-        'fetch',
-        `Failed to fetch VPNGate server list: ${lastError?.message || 'Upstream mirrors unreachable'}`
-      );
-      if (cachedServers.length > 0) {
-        return cachedServers; // Return stale cache if available
-      }
-      throw new Error(`Unable to fetch VPNGate server list: ${lastError?.message || 'Service unavailable'}`);
-    }
-
     try {
-      const servers = this.parseCsv(rawCsv);
-      cachedServers = servers;
-      lastFetchTimestamp = now;
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 15_000);
+      const response = await fetch(VPNGATE_API_URL, {
+        signal: controller.signal,
+        cache: 'no-store',
+        headers: { 'User-Agent': 'IPTV-Proxy-Manager/1.0' },
+      });
+      clearTimeout(timeout);
 
-      await LogService.info('vpngate', 'refresh', `Fetched and parsed ${servers.length} VPNGate servers.`);
+      if (!response.ok) throw new Error(`VPNGate returned HTTP ${response.status}.`);
+      const rawCsv = await response.text();
+      const servers = this.parseCsv(rawCsv);
+      if (!servers.length) throw new Error('VPNGate returned no usable OpenVPN servers.');
+
+      cachedServers = servers;
+      lastFetchTimestamp = Date.now();
+      await LogService.info('vpngate', 'refresh', `Fetched ${servers.length} VPNGate OpenVPN relays.`);
       return servers;
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      await LogService.error('vpngate', 'parse', `VPNGate CSV parse error: ${msg}`);
-      throw new Error(`Failed to parse VPNGate server response: ${msg}`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      await LogService.error('vpngate', 'fetch', `Failed to refresh VPNGate servers: ${message}`);
+      if (cachedServers.length) return cachedServers;
+      throw new Error(`Unable to fetch VPNGate servers: ${message}`);
     }
   }
 
-  /**
-   * Parses the CSV returned by VPNGate
-   */
+  static async getPublicServers(forceRefresh = false): Promise<PublicVpnGateServer[]> {
+    return (await this.fetchServers(forceRefresh)).map(({ ovpnConfigBase64: _config, ...server }) => server);
+  }
+
+  static async getServerById(id: string): Promise<VpnGateServer | null> {
+    let server = cachedServers.find((item) => item.id === id) || null;
+    if (server) return server;
+    await this.fetchServers(false);
+    server = cachedServers.find((item) => item.id === id) || null;
+    return server;
+  }
+
   private static parseCsv(csvText: string): VpnGateServer[] {
-    const lines = csvText.split('\n');
+    const lines = csvText.split(/\r?\n/);
+    const headerIndex = lines.findIndex((line) => line.includes('OpenVPN_ConfigData_Base64'));
+    if (headerIndex < 0) throw new Error('Malformed VPNGate CSV header.');
+
+    const headers = parseCsvLine(lines[headerIndex].replace(/^#/, '')).map((header) => header.trim());
+    const index = (name: string) => headers.indexOf(name);
+    const hostIdx = index('HostName');
+    const ipIdx = index('IP');
+    const scoreIdx = index('Score');
+    const pingIdx = index('Ping');
+    const speedIdx = index('Speed');
+    const countryLongIdx = index('CountryLong');
+    const countryShortIdx = index('CountryShort');
+    const sessionsIdx = index('NumVpnSessions');
+    const uptimeIdx = index('Uptime');
+    const configIdx = index('OpenVPN_ConfigData_Base64');
+
+    if ([hostIdx, ipIdx, configIdx].some((value) => value < 0)) {
+      throw new Error('VPNGate CSV is missing required columns.');
+    }
+
     const servers: VpnGateServer[] = [];
-
-    // Find the header line starting with #HostName or HostName
-    let headerIndex = -1;
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i].trim();
-      if (line.startsWith('#HostName') || line.startsWith('HostName') || line.includes('OpenVPN_ConfigData_Base64')) {
-        headerIndex = i;
-        break;
-      }
-    }
-
-    if (headerIndex === -1) {
-      throw new Error('Malformed VPNGate CSV header');
-    }
-
-    const headers = lines[headerIndex]
-      .replace(/^#/, '')
-      .split(',')
-      .map((h) => h.trim());
-
-    const hostIdx = headers.indexOf('HostName');
-    const ipIdx = headers.indexOf('IP');
-    const scoreIdx = headers.indexOf('Score');
-    const pingIdx = headers.indexOf('Ping');
-    const speedIdx = headers.indexOf('Speed');
-    const countryLongIdx = headers.indexOf('CountryLong');
-    const countryShortIdx = headers.indexOf('CountryShort');
-    const sessionsIdx = headers.indexOf('NumVpnSessions');
-    const uptimeIdx = headers.indexOf('Uptime');
-    const configIdx = headers.indexOf('OpenVPN_ConfigData_Base64');
-
-    for (let i = headerIndex + 1; i < lines.length; i++) {
+    for (let i = headerIndex + 1; i < lines.length; i += 1) {
       const line = lines[i].trim();
       if (!line || line.startsWith('*') || line.startsWith('#')) continue;
-
-      const cols = line.split(',');
-      if (cols.length < headers.length) continue;
-
-      const ip = cols[ipIdx]?.trim();
-      const ovpnBase64 = cols[configIdx]?.trim();
-
-      if (!ip || !ovpnBase64) continue;
+      const columns = parseCsvLine(line);
+      const ip = columns[ipIdx]?.trim();
+      const config = columns[configIdx]?.trim();
+      if (!ip || !config) continue;
+      const hostname = columns[hostIdx]?.trim() || ip;
 
       servers.push({
-        hostname: cols[hostIdx]?.trim() || ip,
+        id: serverId(ip, hostname, config),
+        hostname,
         ip,
-        score: parseInt(cols[scoreIdx] || '0', 10) || 0,
-        ping: parseInt(cols[pingIdx] || '0', 10) || 0,
-        speed: parseInt(cols[speedIdx] || '0', 10) || 0, // bps
-        countryLong: cols[countryLongIdx]?.trim() || 'Unknown',
-        countryShort: cols[countryShortIdx]?.trim().toUpperCase() || 'UN',
-        sessions: parseInt(cols[sessionsIdx] || '0', 10) || 0,
-        uptime: parseInt(cols[uptimeIdx] || '0', 10) || 0,
-        ovpnConfigBase64: ovpnBase64,
+        score: Number.parseInt(columns[scoreIdx] || '0', 10) || 0,
+        ping: Number.parseInt(columns[pingIdx] || '0', 10) || 0,
+        speed: Number.parseInt(columns[speedIdx] || '0', 10) || 0,
+        countryLong: columns[countryLongIdx]?.trim() || 'Unknown',
+        countryShort: columns[countryShortIdx]?.trim().toUpperCase() || 'UN',
+        sessions: Number.parseInt(columns[sessionsIdx] || '0', 10) || 0,
+        uptime: Number.parseInt(columns[uptimeIdx] || '0', 10) || 0,
+        ovpnConfigBase64: config,
       });
     }
 
     return servers;
   }
 
-  /**
-   * Decodes the base64 OpenVPN configuration for a given server
-   */
   static decodeConfig(base64Config: string): string {
-    try {
-      const buffer = Buffer.from(base64Config, 'base64');
-      return buffer.toString('utf-8');
-    } catch {
-      throw new Error('Failed to decode base64 OpenVPN configuration');
-    }
+    if (!base64Config || base64Config.length > 2_000_000) throw new Error('Invalid VPNGate OpenVPN configuration.');
+    const decoded = Buffer.from(base64Config, 'base64').toString('utf8');
+    if (!decoded.trim()) throw new Error('VPNGate OpenVPN configuration decoded to an empty file.');
+    return decoded;
   }
 }

@@ -15,9 +15,9 @@ export interface IptvProvider {
   upstream_password: string;
   local_username: string;
   local_password: string;
-  is_default: number; // 0 or 1
-  cache_duration_hours: number; // 0 to 24
-  enabled: number; // 0 or 1
+  is_default: number;
+  cache_duration_hours: number;
+  enabled: number;
   created_at: string;
   updated_at: string;
 }
@@ -29,6 +29,7 @@ export interface AppSettings {
   id: string;
   active_vpn_type: VpnType;
   active_vpn_profile_id: string | null;
+  active_vpn_label: string | null;
   vpn_status: VpnStatus;
   vpn_last_error: string | null;
   vpn_connected_at: string | null;
@@ -48,6 +49,16 @@ export interface WireguardProfile {
   updated_at: string;
 }
 
+export interface WireguardProfileSummary {
+  id: string;
+  name: string;
+  address: string | null;
+  endpoint: string | null;
+  enabled: number;
+  created_at: string;
+  updated_at: string;
+}
+
 export type OpenvpnSource = 'uploaded' | 'vpngate';
 
 export interface OpenvpnProfile {
@@ -62,8 +73,30 @@ export interface OpenvpnProfile {
   updated_at: string;
 }
 
+export interface OpenvpnProfileSummary {
+  id: string;
+  name: string;
+  remotes: string[];
+  proto: string | null;
+  dev: string | null;
+  hasCredentials: boolean;
+  source: OpenvpnSource;
+  enabled: number;
+  created_at: string;
+  updated_at: string;
+}
+
 export type LogLevel = 'debug' | 'info' | 'warning' | 'error';
-export type LogSource = 'auth' | 'provider' | 'vpn' | 'wireguard' | 'openvpn' | 'warp' | 'vpngate' | 'system' | 'proxy';
+export type LogSource =
+  | 'auth'
+  | 'provider'
+  | 'vpn'
+  | 'wireguard'
+  | 'openvpn'
+  | 'warp'
+  | 'vpngate'
+  | 'system'
+  | 'proxy';
 
 export interface LogEntry {
   id: string;
@@ -77,6 +110,7 @@ export interface LogEntry {
 }
 
 export interface VpnGateServer {
+  id: string;
   ip: string;
   hostname: string;
   countryLong: string;
@@ -88,3 +122,5 @@ export interface VpnGateServer {
   uptime: number;
   ovpnConfigBase64: string;
 }
+
+export type PublicVpnGateServer = Omit<VpnGateServer, 'ovpnConfigBase64'>;

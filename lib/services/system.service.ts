@@ -1,7 +1,8 @@
 import fs from 'fs';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
-import { getDb, initDatabase } from '../db';
+import { getDatabasePath, getDb, initDatabase } from '../db';
+import { WarpService } from './vpn/warp';
 
 const execFileAsync = promisify(execFile);
 
@@ -12,6 +13,7 @@ export interface SystemHealthReport {
   wireguardInstalled: boolean;
   openvpnInstalled: boolean;
   warpInstalled: boolean;
+  warpServiceRunning: boolean;
   ipRouteInstalled: boolean;
   dbPath: string;
   dbSizeFormatted: string;
@@ -27,81 +29,44 @@ export interface SystemHealthReport {
   };
 }
 
+async function binaryExists(binary: string): Promise<boolean> {
+  try {
+    await execFileAsync('which', [binary], { timeout: 3_000 });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export class SystemService {
   static async getHealth(): Promise<SystemHealthReport> {
     await initDatabase();
     const db = getDb();
-
-    // Check TUN device
     const tunPath = '/dev/net/tun';
-    let tunAvailable = false;
+    const tunAvailable = fs.existsSync(tunPath);
+
+    const [wireguardInstalled, openvpnInstalled, ipRouteInstalled, warpInstalled] = await Promise.all([
+      binaryExists('wg-quick'),
+      binaryExists('openvpn'),
+      binaryExists('ip'),
+      WarpService.isWarpInstalled(),
+    ]);
+    const warpServiceRunning = warpInstalled ? (await WarpService.getStatus()).daemonRunning : false;
+
+    const providersRes = await db.execute('SELECT COUNT(*) AS total, COALESCE(SUM(enabled), 0) AS active FROM iptv_providers');
+    const logsRes = await db.execute('SELECT COUNT(*) AS total FROM logs');
+    const pragmaRes = await db.execute('PRAGMA journal_mode;');
+    const dbWalMode = String(pragmaRes.rows[0]?.journal_mode || '').toLowerCase() === 'wal';
+
+    const dbPath = getDatabasePath();
+    let dbSizeFormatted = '0 B';
     try {
-      tunAvailable = fs.existsSync(tunPath);
+      const bytes = fs.statSync(dbPath).size;
+      if (bytes < 1024) dbSizeFormatted = `${bytes} B`;
+      else if (bytes < 1024 * 1024) dbSizeFormatted = `${(bytes / 1024).toFixed(1)} KB`;
+      else dbSizeFormatted = `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
     } catch {
-      tunAvailable = false;
-    }
-
-    // Check binaries
-    let wireguardInstalled = false;
-    try {
-      await execFileAsync('which', ['wg-quick']);
-      wireguardInstalled = true;
-    } catch {
-      wireguardInstalled = false;
-    }
-
-    let openvpnInstalled = false;
-    try {
-      await execFileAsync('which', ['openvpn']);
-      openvpnInstalled = true;
-    } catch {
-      openvpnInstalled = false;
-    }
-
-    let warpInstalled = false;
-    try {
-      await execFileAsync('which', ['warp-cli']);
-      warpInstalled = true;
-    } catch {
-      warpInstalled = false;
-    }
-
-    let ipRouteInstalled = false;
-    try {
-      await execFileAsync('which', ['ip']);
-      ipRouteInstalled = true;
-    } catch {
-      ipRouteInstalled = false;
-    }
-
-    // Database stats
-    const providersRes = await db.execute('SELECT COUNT(*) as total, SUM(enabled) as active FROM iptv_providers');
-    const totalProviders = Number(providersRes.rows[0]?.total || 0);
-    const activeProviders = Number(providersRes.rows[0]?.active || 0);
-
-    const logsRes = await db.execute('SELECT COUNT(*) as total FROM logs');
-    const totalLogs = Number(logsRes.rows[0]?.total || 0);
-
-    let dbWalMode = false;
-    try {
-      const pragmaRes = await db.execute('PRAGMA journal_mode;');
-      dbWalMode = String(pragmaRes.rows[0]?.journal_mode || '').toLowerCase() === 'wal';
-    } catch {
-      dbWalMode = false;
-    }
-
-    const dbPath = process.env.DATABASE_PATH || '/data/iptv-proxy.db';
-    let dbSizeFormatted = 'N/A';
-    try {
-      if (fs.existsSync(dbPath)) {
-        const stat = fs.statSync(dbPath);
-        const bytes = stat.size;
-        if (bytes < 1024) dbSizeFormatted = `${bytes} B`;
-        else if (bytes < 1024 * 1024) dbSizeFormatted = `${(bytes / 1024).toFixed(1)} KB`;
-        else dbSizeFormatted = `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
-      }
-    } catch {
-      dbSizeFormatted = 'Unknown';
+      dbSizeFormatted = 'Unavailable';
     }
 
     return {
@@ -111,13 +76,14 @@ export class SystemService {
       wireguardInstalled,
       openvpnInstalled,
       warpInstalled,
+      warpServiceRunning,
       ipRouteInstalled,
       dbPath,
       dbSizeFormatted,
       dbWalMode,
-      activeProviders,
-      totalProviders,
-      totalLogs,
+      activeProviders: Number(providersRes.rows[0]?.active || 0),
+      totalProviders: Number(providersRes.rows[0]?.total || 0),
+      totalLogs: Number(logsRes.rows[0]?.total || 0),
       environment: {
         nodeVersion: process.version,
         platform: process.platform,

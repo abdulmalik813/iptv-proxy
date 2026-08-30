@@ -1,16 +1,32 @@
 node_modules/
+.pnpm-store/
 .next/
+out/
 coverage/
 .DS_Store
+Thumbs.db
 *.log
-.env*
+pnpm-debug.log*
+
+# Local environment files
+.env
+.env.*
 !.env.example
 
-# SQLite Database & Runtime Files
+# SQLite database and runtime files
 data/
 *.db
 *.db-journal
 *.db-wal
 *.db-shm
+*.sqlite
+*.sqlite3
+
+# VPN runtime/config exports
+vpn_configs/
+*.ovpn
 /tmp/vpn/
 
+# TypeScript/editor
+*.tsbuildinfo
+.idea/
