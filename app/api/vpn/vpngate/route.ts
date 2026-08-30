@@ -40,13 +40,50 @@ export async function POST(req: NextRequest) {
 
     if (parsed.data.action === 'connect') {
       if (VpnManager.isOperationInProgress()) return NextResponse.json({ success: false, error: 'Another VPN operation is already in progress.' }, { status: 409 });
-      const result = await VpnManager.connectVpnGateServer(server.id);
-      const state = await VpnManager.getVpnStatusSummary();
-      if (!result.success) {
-        const conflict = state.status === 'connected' || /already connected|disconnect the current vpn|already being established/i.test(result.error || '');
-        return NextResponse.json({ success: false, error: result.error || 'VPNGate connection failed.', data: state }, { status: conflict ? 409 : 500 });
+
+      const first = await VpnManager.connectVpnGateServer(server.id);
+      let state = await VpnManager.getVpnStatusSummary();
+      if (first.success) return NextResponse.json({ success: true, data: state, attempts: 1 });
+
+      const conflict = state.status === 'connected' || /already connected|disconnect the current vpn|already being established/i.test(first.error || '');
+      if (conflict) {
+        return NextResponse.json({ success: false, error: first.error || 'VPNGate connection failed.', data: state }, { status: 409 });
       }
-      return NextResponse.json({ success: true, data: state });
+
+      // Public VPNGate relays can disappear or reject a connection between list refresh and connect.
+      // Refresh once and retry with another relay from the same country when possible.
+      const refreshed = await VpnGateService.fetchServers(true);
+      const retryServer = refreshed
+        .filter((candidate) => candidate.id !== server.id)
+        .sort((a, b) => {
+          const aSameCountry = a.countryShort === server.countryShort ? 1 : 0;
+          const bSameCountry = b.countryShort === server.countryShort ? 1 : 0;
+          if (aSameCountry !== bSameCountry) return bSameCountry - aSameCountry;
+          return (b.speed || 0) - (a.speed || 0);
+        })[0];
+
+      if (!retryServer) {
+        return NextResponse.json({ success: false, error: first.error || 'VPNGate connection failed and no retry relay was available.', data: state, attempts: 1 }, { status: 500 });
+      }
+
+      const second = await VpnManager.connectVpnGateServer(retryServer.id);
+      state = await VpnManager.getVpnStatusSummary();
+      if (!second.success) {
+        return NextResponse.json({
+          success: false,
+          error: second.error || first.error || 'VPNGate connection failed after retry.',
+          data: state,
+          attempts: 2,
+          retriedServer: { id: retryServer.id, ip: retryServer.ip, countryShort: retryServer.countryShort },
+        }, { status: 500 });
+      }
+
+      return NextResponse.json({
+        success: true,
+        data: state,
+        attempts: 2,
+        retriedServer: { id: retryServer.id, ip: retryServer.ip, countryShort: retryServer.countryShort },
+      });
     }
 
     const profile = await OpenvpnService.createProfile({
