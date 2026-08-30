@@ -1,32 +1,15 @@
 import crypto from 'crypto';
 import { getDb, initDatabase } from '../db';
 import { IptvProvider } from '../db/schema';
+import { hashProviderPassword } from '../auth/provider-password';
 import { LogService } from './log.service';
+import { ProviderUserService } from './provider-user.service';
 
 const MASK = '••••••••';
 const RESERVED_ROUTES = new Set([
-  'ui',
-  'api',
-  'admin',
-  'login',
-  'vpn',
-  'logs',
-  'dashboard',
-  'settings',
-  'system',
-  'health',
-  '_next',
-  '_hls',
-  'public',
-  'favicon.ico',
-  'player_api.php',
-  'get.php',
-  'xmltv.php',
-  'live',
-  'movie',
-  'series',
-  'timeshift',
-  'streaming',
+  'ui', 'api', 'admin', 'login', 'vpn', 'logs', 'dashboard', 'settings', 'system', 'health',
+  '_next', '_hls', 'public', 'favicon.ico', 'player_api.php', 'get.php', 'xmltv.php',
+  'live', 'movie', 'series', 'timeshift', 'streaming',
 ]);
 
 export function normalizeRoute(route: string): string {
@@ -52,17 +35,9 @@ function normalizeHost(host: string): string {
   } catch {
     throw new Error('Provider host must be a valid absolute HTTP or HTTPS URL.');
   }
-
-  if (!['http:', 'https:'].includes(parsed.protocol)) {
-    throw new Error('Provider host must use http:// or https://.');
-  }
-  if (parsed.username || parsed.password) {
-    throw new Error('Do not embed credentials in the provider host URL.');
-  }
-  if (parsed.search || parsed.hash) {
-    throw new Error('Provider host must not contain query parameters or fragments.');
-  }
-
+  if (!['http:', 'https:'].includes(parsed.protocol)) throw new Error('Provider host must use http:// or https://.');
+  if (parsed.username || parsed.password) throw new Error('Do not embed credentials in the provider host URL.');
+  if (parsed.search || parsed.hash) throw new Error('Provider host must not contain query parameters or fragments.');
   return candidate.replace(/\/+$/, '');
 }
 
@@ -75,13 +50,18 @@ function rowToProvider(row: Record<string, unknown>, includeSensitive: boolean):
     upstream_username: String(row.upstream_username),
     upstream_password: includeSensitive ? String(row.upstream_password) : MASK,
     local_username: String(row.local_username),
-    local_password: includeSensitive ? String(row.local_password) : MASK,
+    local_password: MASK,
     is_default: Number(row.is_default || 0),
     cache_duration_hours: Number(row.cache_duration_hours ?? 1),
     enabled: Number(row.enabled ?? 1),
     created_at: String(row.created_at),
     updated_at: String(row.updated_at),
   };
+}
+
+async function attachUsers(provider: IptvProvider, includeSensitive: boolean): Promise<IptvProvider> {
+  provider.users = await ProviderUserService.getUsers(provider.id, includeSensitive);
+  return provider;
 }
 
 export interface CreateProviderInput {
@@ -112,20 +92,27 @@ export interface UpdateProviderInput {
 
 export class ProviderService {
   static toPublicProvider(provider: IptvProvider): IptvProvider {
-    return { ...provider, upstream_password: MASK, local_password: MASK };
+    return {
+      ...provider,
+      upstream_password: MASK,
+      local_password: MASK,
+      users: provider.users?.map((user) => ({ ...user, password_hash: MASK })),
+    };
   }
 
   static async getAllProviders(includeSensitive = false): Promise<IptvProvider[]> {
     await initDatabase();
     const res = await getDb().execute('SELECT * FROM iptv_providers ORDER BY is_default DESC, name ASC');
-    return res.rows.map((row) => rowToProvider(row as unknown as Record<string, unknown>, includeSensitive));
+    return Promise.all(
+      res.rows.map((row) => attachUsers(rowToProvider(row as unknown as Record<string, unknown>, includeSensitive), includeSensitive)),
+    );
   }
 
   static async getProviderById(id: string, includeSensitive = false): Promise<IptvProvider | null> {
     await initDatabase();
     const res = await getDb().execute({ sql: 'SELECT * FROM iptv_providers WHERE id = ?', args: [id] });
     if (!res.rows.length) return null;
-    return rowToProvider(res.rows[0] as unknown as Record<string, unknown>, includeSensitive);
+    return attachUsers(rowToProvider(res.rows[0] as unknown as Record<string, unknown>, includeSensitive), includeSensitive);
   }
 
   static async createProvider(input: CreateProviderInput): Promise<IptvProvider> {
@@ -134,24 +121,44 @@ export class ProviderService {
     const name = input.name.trim();
     const route = normalizeRoute(input.route);
     const host = normalizeHost(input.host);
+    const localUsername = input.local_username.trim();
     if (!name) throw new Error('Provider name is required.');
     if (!route) throw new Error('Provider route is required and must contain letters or numbers.');
     if (isRouteReserved(route)) throw new Error(`Route "${route}" is reserved by the system.`);
+    if (!localUsername) throw new Error('Initial client username is required.');
+    if (!input.local_password) throw new Error('Initial client password is required.');
+    if (input.local_password.length > 4096) throw new Error('Initial client password is too long.');
     const routeCheck = await db.execute({ sql: 'SELECT id FROM iptv_providers WHERE route = ?', args: [route] });
     if (routeCheck.rows.length) throw new Error(`Route "${route}" is already in use.`);
+
     const id = crypto.randomUUID();
+    const providerUserId = crypto.randomUUID();
     const now = new Date().toISOString();
     const isDefault = input.is_default ? 1 : 0;
     const cacheHours = Math.max(0, Math.min(24, Math.trunc(input.cache_duration_hours ?? 1)));
     const enabled = input.enabled === false ? 0 : 1;
+    const passwordHash = hashProviderPassword(input.local_password);
     const statements: Array<string | { sql: string; args: Array<string | number> }> = [];
-    if (isDefault) statements.push({ sql: 'UPDATE iptv_providers SET is_default = 0, updated_at = ? WHERE is_default = 1', args: [now] });
+    if (isDefault) {
+      statements.push({ sql: 'UPDATE iptv_providers SET is_default = 0, updated_at = ? WHERE is_default = 1', args: [now] });
+    }
     statements.push({
-      sql: `INSERT INTO iptv_providers (id, name, host, route, upstream_username, upstream_password, local_username, local_password, is_default, cache_duration_hours, enabled, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      args: [id, name, host, route, input.upstream_username.trim(), input.upstream_password, input.local_username.trim(), input.local_password, isDefault, cacheHours, enabled, now, now],
+      sql: `INSERT INTO iptv_providers (id, name, host, route, upstream_username, upstream_password, local_username, local_password, is_default, cache_duration_hours, enabled, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, '', ?, ?, ?, ?, ?)`,
+      args: [id, name, host, route, input.upstream_username.trim(), input.upstream_password, localUsername, isDefault, cacheHours, enabled, now, now],
+    });
+    statements.push({
+      sql: `INSERT INTO provider_users (id, provider_id, username, password, password_hash, enabled, created_at, updated_at)
+            VALUES (?, ?, ?, '', ?, 1, ?, ?)`,
+      args: [providerUserId, id, localUsername, passwordHash, now, now],
     });
     await db.batch(statements);
-    await LogService.info('provider', 'creation', `Created provider "${name}" on route "/${route}".`, { provider_id: id, is_default: Boolean(isDefault), cache_duration_hours: cacheHours });
+    await LogService.info('provider', 'creation', `Created provider "${name}" on route "/${route}".`, {
+      provider_id: id,
+      is_default: Boolean(isDefault),
+      cache_duration_hours: cacheHours,
+      initial_provider_user_id: providerUserId,
+    });
     const created = await this.getProviderById(id, false);
     if (!created) throw new Error('Provider was created but could not be reloaded.');
     return created;
@@ -166,6 +173,7 @@ export class ProviderService {
     const statements: Array<string | { sql: string; args: Array<string | number> }> = [];
     const name = input.name !== undefined ? input.name.trim() : existing.name;
     if (!name) throw new Error('Provider name cannot be empty.');
+
     let route = existing.route;
     if (input.route !== undefined) {
       route = normalizeRoute(input.route);
@@ -174,24 +182,40 @@ export class ProviderService {
       const check = await db.execute({ sql: 'SELECT id FROM iptv_providers WHERE route = ? AND id != ?', args: [route, id] });
       if (check.rows.length) throw new Error(`Route "${route}" is already in use.`);
     }
+
     const host = input.host !== undefined ? normalizeHost(input.host) : existing.host;
     let isDefault = existing.is_default;
     if (input.is_default !== undefined) {
       isDefault = input.is_default ? 1 : 0;
-      if (isDefault) statements.push({ sql: 'UPDATE iptv_providers SET is_default = 0, updated_at = ? WHERE is_default = 1 AND id != ?', args: [now, id] });
+      if (isDefault) {
+        statements.push({ sql: 'UPDATE iptv_providers SET is_default = 0, updated_at = ? WHERE is_default = 1 AND id != ?', args: [now, id] });
+      }
     }
+
     const upstreamUsername = input.upstream_username !== undefined ? input.upstream_username.trim() : existing.upstream_username;
     const upstreamPassword = input.upstream_password !== undefined && input.upstream_password !== MASK ? input.upstream_password : existing.upstream_password;
-    const localUsername = input.local_username !== undefined ? input.local_username.trim() : existing.local_username;
-    const localPassword = input.local_password !== undefined && input.local_password !== MASK ? input.local_password : existing.local_password;
-    const cacheHours = input.cache_duration_hours !== undefined ? Math.max(0, Math.min(24, Math.trunc(input.cache_duration_hours))) : existing.cache_duration_hours;
+    const cacheHours = input.cache_duration_hours !== undefined
+      ? Math.max(0, Math.min(24, Math.trunc(input.cache_duration_hours)))
+      : existing.cache_duration_hours;
     const enabled = input.enabled !== undefined ? (input.enabled ? 1 : 0) : existing.enabled;
+
     statements.push({
-      sql: `UPDATE iptv_providers SET name = ?, host = ?, route = ?, upstream_username = ?, upstream_password = ?, local_username = ?, local_password = ?, is_default = ?, cache_duration_hours = ?, enabled = ?, updated_at = ? WHERE id = ?`,
-      args: [name, host, route, upstreamUsername, upstreamPassword, localUsername, localPassword, isDefault, cacheHours, enabled, now, id],
+      sql: `UPDATE iptv_providers SET name = ?, host = ?, route = ?, upstream_username = ?, upstream_password = ?, is_default = ?, cache_duration_hours = ?, enabled = ?, local_password = '', updated_at = ? WHERE id = ?`,
+      args: [name, host, route, upstreamUsername, upstreamPassword, isDefault, cacheHours, enabled, now, id],
     });
     await db.batch(statements);
-    await LogService.info('provider', 'update', `Updated provider "${name}" (route: "/${route}").`, { provider_id: id, is_default: Boolean(isDefault), enabled: Boolean(enabled) });
+
+    if (input.local_username !== undefined || (input.local_password !== undefined && input.local_password !== MASK)) {
+      const username = input.local_username?.trim() || existing.local_username;
+      const password = input.local_password !== undefined && input.local_password !== MASK ? input.local_password : undefined;
+      await ProviderUserService.upsertPrimaryUser(id, username, password);
+    }
+
+    await LogService.info('provider', 'update', `Updated provider "${name}" (route: "/${route}").`, {
+      provider_id: id,
+      is_default: Boolean(isDefault),
+      enabled: Boolean(enabled),
+    });
     const updated = await this.getProviderById(id, false);
     if (!updated) throw new Error('Provider was updated but could not be reloaded.');
     return updated;
@@ -231,14 +255,14 @@ export class ProviderService {
     if (firstSegment) {
       const match = await db.execute({ sql: 'SELECT * FROM iptv_providers WHERE route = ? AND enabled = 1 LIMIT 1', args: [firstSegment] });
       if (match.rows.length) {
-        const provider = rowToProvider(match.rows[0] as unknown as Record<string, unknown>, true);
+        const provider = await attachUsers(rowToProvider(match.rows[0] as unknown as Record<string, unknown>, true), true);
         const remaining = segments.slice(1).join('/');
         return { provider, matchedBy: 'route', remainingPath: `/${remaining}`, resolvedTargetUrl: remaining ? `${provider.host}/${remaining}` : provider.host };
       }
     }
     const fallback = await db.execute('SELECT * FROM iptv_providers WHERE is_default = 1 AND enabled = 1 LIMIT 1');
     if (fallback.rows.length) {
-      const provider = rowToProvider(fallback.rows[0] as unknown as Record<string, unknown>, true);
+      const provider = await attachUsers(rowToProvider(fallback.rows[0] as unknown as Record<string, unknown>, true), true);
       return { provider, matchedBy: 'default', remainingPath: `/${trimmed}`, resolvedTargetUrl: trimmed ? `${provider.host}/${trimmed}` : provider.host };
     }
     return { provider: null, matchedBy: 'none', remainingPath: `/${trimmed}`, resolvedTargetUrl: null };

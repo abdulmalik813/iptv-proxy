@@ -1,7 +1,7 @@
 'use client';
 
 import * as React from 'react';
-import { Database, HardDrive, Save, Server, Settings2 } from 'lucide-react';
+import { Database, HardDrive, KeyRound, Save, Server, Settings2 } from 'lucide-react';
 import { AppShell } from '@/components/layout/app-shell';
 import { PageHeader } from '@/components/layout/page-header';
 import { Alert, AlertDescription } from '@/components/ui/alert';
@@ -41,6 +41,7 @@ type Envelope<T = unknown> = {
   success?: boolean;
   data?: T;
   error?: string;
+  message?: string;
 };
 
 function formatUptime(seconds = 0) {
@@ -71,6 +72,13 @@ export default function SettingsPage() {
   const [saving, setSaving] = React.useState(false);
   const [message, setMessage] = React.useState<string | null>(null);
   const [error, setError] = React.useState<string | null>(null);
+
+  const [currentPassword, setCurrentPassword] = React.useState('');
+  const [newPassword, setNewPassword] = React.useState('');
+  const [confirmPassword, setConfirmPassword] = React.useState('');
+  const [passwordSaving, setPasswordSaving] = React.useState(false);
+  const [passwordError, setPasswordError] = React.useState<string | null>(null);
+  const [passwordMessage, setPasswordMessage] = React.useState<string | null>(null);
 
   const load = React.useCallback(async () => {
     setLoading(true);
@@ -123,14 +131,68 @@ export default function SettingsPage() {
     }
   };
 
+  const changePassword = async (event: React.FormEvent) => {
+    event.preventDefault();
+    setPasswordSaving(true);
+    setPasswordError(null);
+    setPasswordMessage(null);
+    try {
+      if (newPassword.length < 8) throw new Error('New password must contain at least 8 characters.');
+      if (newPassword !== confirmPassword) throw new Error('New password confirmation does not match.');
+      const response = await fetch(apiPath('/api/auth/password'), {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }),
+      });
+      const payload = await readJson<Envelope>(response);
+      if (!response.ok || !payload.success) throw new Error(payload.error || 'Unable to update password.');
+      setCurrentPassword('');
+      setNewPassword('');
+      setConfirmPassword('');
+      setPasswordMessage(payload.message || 'Password updated. Other sessions were signed out.');
+    } catch (err) {
+      setPasswordError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setPasswordSaving(false);
+    }
+  };
+
   return (
     <AppShell>
-      <PageHeader title="Settings" description="Application retention, storage, and runtime information." />
+      <PageHeader title="Settings" description="Security, retention, storage, and runtime information." />
 
       {error && <Alert variant="destructive"><AlertDescription>{error}</AlertDescription></Alert>}
       {message && <Alert variant="success"><AlertDescription>{message}</AlertDescription></Alert>}
 
       <div className="grid gap-6 lg:grid-cols-2">
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2"><KeyRound className="size-4" />Administrator password</CardTitle>
+            <CardDescription>Changing your password signs out every other administrator session immediately.</CardDescription>
+          </CardHeader>
+          <CardContent>
+            {passwordError && <Alert variant="destructive" className="mb-5"><AlertDescription>{passwordError}</AlertDescription></Alert>}
+            {passwordMessage && <Alert variant="success" className="mb-5"><AlertDescription>{passwordMessage}</AlertDescription></Alert>}
+            <form onSubmit={changePassword} className="space-y-4">
+              <div className="space-y-2">
+                <Label htmlFor="current-password">Current password</Label>
+                <Input id="current-password" type="password" value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} autoComplete="current-password" required />
+              </div>
+              <div className="grid gap-4 sm:grid-cols-2">
+                <div className="space-y-2">
+                  <Label htmlFor="new-password">New password</Label>
+                  <Input id="new-password" type="password" value={newPassword} onChange={(event) => setNewPassword(event.target.value)} autoComplete="new-password" minLength={8} required />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="confirm-password">Confirm password</Label>
+                  <Input id="confirm-password" type="password" value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} autoComplete="new-password" minLength={8} required />
+                </div>
+              </div>
+              <Button type="submit" disabled={passwordSaving}>{passwordSaving ? 'Updating…' : 'Update password'}</Button>
+            </form>
+          </CardContent>
+        </Card>
+
         <Card>
           <CardHeader>
             <CardTitle className="flex items-center gap-2"><Settings2 className="size-4" />Log retention</CardTitle>
@@ -141,23 +203,12 @@ export default function SettingsPage() {
               <div className="space-y-2">
                 <Label htmlFor="log-retention-days">Retention period</Label>
                 <div className="flex max-w-xs items-center gap-2">
-                  <Input
-                    id="log-retention-days"
-                    type="number"
-                    min={1}
-                    max={365}
-                    value={logRetentionDays}
-                    onChange={(event) => setLogRetentionDays(Number.parseInt(event.target.value, 10) || 1)}
-                    disabled={loading}
-                  />
+                  <Input id="log-retention-days" type="number" min={1} max={365} value={logRetentionDays} onChange={(event) => setLogRetentionDays(Number.parseInt(event.target.value, 10) || 1)} disabled={loading} />
                   <span className="text-sm text-muted-foreground">days</span>
                 </div>
                 <p className="text-xs text-muted-foreground">Valid range: 1–365 days.</p>
               </div>
-              <Button type="submit" disabled={saving || loading}>
-                <Save />
-                {saving ? 'Saving…' : 'Save settings'}
-              </Button>
+              <Button type="submit" disabled={saving || loading}><Save />{saving ? 'Saving…' : 'Save settings'}</Button>
             </form>
           </CardContent>
         </Card>
@@ -193,7 +244,7 @@ export default function SettingsPage() {
           </CardContent>
         </Card>
 
-        <Card>
+        <Card className="lg:col-span-2">
           <CardHeader>
             <CardTitle className="flex items-center gap-2"><HardDrive className="size-4" />Network state</CardTitle>
             <CardDescription>Persisted VPN state recorded by the control plane.</CardDescription>

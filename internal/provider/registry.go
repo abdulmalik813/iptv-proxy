@@ -12,6 +12,16 @@ import (
 	"time"
 )
 
+type User struct {
+	ID             string `json:"id"`
+	Username       string `json:"username"`
+	PasswordHash   string `json:"password_hash"`
+	Enabled        int    `json:"enabled"`
+	CreatedAt      string `json:"created_at"`
+	UpdatedAt      string `json:"updated_at"`
+	ClientPassword string `json:"-"`
+}
+
 type Provider struct {
 	ID                 string `json:"id"`
 	Name               string `json:"name"`
@@ -21,9 +31,26 @@ type Provider struct {
 	UpstreamPassword   string `json:"upstream_password"`
 	LocalUsername      string `json:"local_username"`
 	LocalPassword      string `json:"local_password"`
+	Users              []User `json:"users"`
 	IsDefault          int    `json:"is_default"`
 	CacheDurationHours int    `json:"cache_duration_hours"`
 	Enabled            int    `json:"enabled"`
+}
+
+func (p Provider) Authenticate(username, password string) (User, bool) {
+	if username == "" || password == "" {
+		return User{}, false
+	}
+	for _, user := range p.Users {
+		if user.Enabled != 1 || user.Username != username {
+			continue
+		}
+		if verifyProviderPassword(password, user.PasswordHash) {
+			user.ClientPassword = password
+			return user, true
+		}
+	}
+	return User{}, false
 }
 
 type apiResponse struct {

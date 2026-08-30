@@ -10,15 +10,20 @@ function compact(value) {
   return value.replace(/\s+/g, ' ');
 }
 
-test('Redis is present in local and Dokploy compose files', async () => {
+test('Redis is authenticated in local and Dokploy compose files', async () => {
   for (const path of ['docker-compose.yml', 'docker-compose.dokploy.yml']) {
     const compose = await source(path);
     assert.match(compose, /redis:\n/);
     assert.match(compose, /image: redis:8-alpine/);
     assert.match(compose, /REDIS_ADDR: redis:6379/);
+    assert.match(compose, /REDIS_PASSWORD:/);
+    assert.match(compose, /--requirepass/);
     assert.match(compose, /iptv-redis-data:\/data/);
-    assert.match(compose, /redis-cli.*ping/);
+    assert.match(compose, /redis-cli -a/);
   }
+  const main = await source('cmd/proxy/main.go');
+  assert.match(main, /REDIS_PASSWORD/);
+  assert.match(main, /Password: redisPassword/);
 });
 
 test('Go route resolver supports explicit provider routes before default provider', async () => {
@@ -73,6 +78,7 @@ test('metadata cache has no fixed response-size ceiling and uses chunked generat
   assert.doesNotMatch(cacheProxy, /maxMetadataBytes/);
   assert.doesNotMatch(cacheProxy, /LimitReader/);
   assert.match(cacheProxy, /io\.ReadAll\(resp\.Body\)/);
+  assert.match(cacheProxy, /Header\.Del\("Accept-Encoding"\)/);
   assert.match(cache, /bodyChunkSize\s*=\s*8 \* 1024 \* 1024/);
   assert.match(cache, /writeGeneration/);
   assert.match(cache, /generation/);
@@ -168,14 +174,16 @@ test('Redis-backed Go test suite executes a matrix of 100 cache scenarios', asyn
   assert.match(scenarios, /TestLegacyMigrationPublishesCanonicalEntryBeforeDeletingDuplicate/);
 });
 
-test('cached M3U playlists rewrite playable URLs through the public proxy', async () => {
+test('cached M3U playlists personalize playable URLs with request-only client credentials', async () => {
   const cacheProxy = compact(await source('internal/proxy/cache_proxy.go'));
   const m3u = await source('internal/proxy/m3u.go');
   assert.match(cacheProxy, /endpoint == "get\.php"/);
-  assert.match(cacheProxy, /rewriteM3UPlaylist/);
-  assert.match(m3u, /p\.LocalUsername/);
-  assert.match(m3u, /p\.LocalPassword/);
+  assert.match(cacheProxy, /rewriteM3UPlaylist\(p, clientUser, body\)/);
+  assert.match(m3u, /clientUser\.Username/);
+  assert.match(m3u, /clientUser\.ClientPassword/);
   assert.match(m3u, /p\.Route/);
+  assert.doesNotMatch(m3u, /p\.LocalUsername/);
+  assert.doesNotMatch(m3u, /p\.LocalPassword/);
   assert.match(m3u, /case "live", "movie", "series", "timeshift"/);
 });
 
@@ -245,4 +253,88 @@ test('Go receives sensitive provider configuration only through the internal aut
   assert.match(registry, /Authorization/);
   assert.match(registry, /Bearer/);
   assert.match(registry, /127\.0\.0\.1:3000/);
+});
+
+test('provider client users are hashed at rest and authenticate independently', async () => {
+  const migrations = await source('lib/db/migrations.ts');
+  const password = await source('lib/auth/provider-password.ts');
+  const service = await source('lib/services/provider-user.service.ts');
+  const registry = await source('internal/provider/registry.go');
+  const verifier = await source('internal/provider/password.go');
+  const handlerTests = await source('internal/proxy/direct_test.go');
+  assert.match(migrations, /CREATE TABLE IF NOT EXISTS provider_users/);
+  assert.match(migrations, /UNIQUE \(provider_id, username\)/);
+  assert.match(migrations, /password_hash/);
+  assert.match(migrations, /provider user plaintext passwords are not allowed/);
+  assert.match(migrations, /SET local_password = ''/);
+  assert.match(password, /pbkdf2Sync/);
+  assert.match(password, /210_000/);
+  assert.match(service, /hashProviderPassword/);
+  assert.match(service, /password = ''/);
+  assert.match(service, /createUser/);
+  assert.match(service, /updateUser/);
+  assert.match(service, /deleteUser/);
+  assert.match(registry, /PasswordHash/);
+  assert.match(registry, /ClientPassword string `json:"-"`/);
+  assert.match(registry, /verifyProviderPassword/);
+  assert.match(registry, /user\.Enabled != 1/);
+  assert.match(verifier, /crypto\/pbkdf2/);
+  assert.match(verifier, /ConstantTimeCompare/);
+  assert.match(handlerTests, /TestBuildUpstreamURLAcceptsSecondProviderUser/);
+  assert.match(handlerTests, /TestBuildUpstreamURLRejectsWrongProviderUserPassword/);
+  assert.match(handlerTests, /TestBuildUpstreamURLRejectsDisabledProviderUser/);
+});
+
+test('proxy does not forward original client identity or provider cookie injection', async () => {
+  const handler = await source('internal/proxy/handler.go');
+  const tests = await source('internal/proxy/headers_test.go');
+  for (const header of ['x-forwarded-for', 'x-real-ip', 'cf-connecting-ip', 'cookie', 'authorization']) {
+    assert.ok(handler.includes(`"${header}"`), `${header} must be stripped upstream`);
+  }
+  assert.match(handler, /lower == "set-cookie"/);
+  assert.match(tests, /TestCopySafeRequestHeadersStripsClientIdentityAndAdminSecrets/);
+  assert.match(tests, /TestCopyResponseHeadersBlocksUpstreamCookieInjection/);
+});
+
+test('administrator password changes invalidate older sessions', async () => {
+  const migrations = await source('lib/db/migrations.ts');
+  const session = await source('lib/auth/session.ts');
+  const passwordRoute = await source('app/api/auth/password/route.ts');
+  const settingsPage = await source('app/settings/page.tsx');
+  assert.match(migrations, /session_version/);
+  assert.match(session, /sessionVersion/);
+  assert.match(session, /sessionVersion !== payload\.sessionVersion/);
+  assert.match(passwordRoute, /newSessionVersion = user\.session_version \+ 1/);
+  assert.match(passwordRoute, /Previous sessions were invalidated/);
+  assert.match(settingsPage, /Update password/);
+});
+
+test('database migrations are protected by verified pre-migration snapshots', async () => {
+  const db = await source('lib/db/index.ts');
+  assert.match(db, /LATEST_SCHEMA_VERSION = 4/);
+  assert.match(db, /PRAGMA quick_check/);
+  assert.match(db, /PRAGMA wal_checkpoint\(FULL\)/);
+  assert.match(db, /VACUUM INTO/);
+  assert.match(db, /Migration backup/);
+  assert.match(db, /MAX_MIGRATION_BACKUPS = 5/);
+});
+
+test('shared container supervision exits when either primary process dies', async () => {
+  const entrypoint = await source('docker/entrypoint.sh');
+  const dockerfile = await source('Dockerfile');
+  assert.match(entrypoint, /wait -n -p EXITED_PID/);
+  assert.match(entrypoint, /NEXT_PID/);
+  assert.match(entrypoint, /GO_PID/);
+  assert.match(entrypoint, /shutdown/);
+  assert.match(dockerfile, /bash/);
+  assert.match(dockerfile, /STOPSIGNAL SIGTERM/);
+});
+
+test('admin UI sends baseline browser security headers', async () => {
+  const config = await source('next.config.ts');
+  for (const header of ['Content-Security-Policy', 'X-Content-Type-Options', 'X-Frame-Options', 'Referrer-Policy', 'Permissions-Policy']) {
+    assert.ok(config.includes(header), `${header} should be configured`);
+  }
+  assert.match(config, /frame-ancestors 'none'/);
+  assert.match(config, /object-src 'none'/);
 });

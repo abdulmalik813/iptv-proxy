@@ -15,7 +15,7 @@ import (
 	"github.com/abdulmalik813/iptv-proxy/internal/provider"
 )
 
-func (h *Handler) serveCached(w http.ResponseWriter, r *http.Request, p provider.Provider, endpoint string, upstreamURL *url.URL) {
+func (h *Handler) serveCached(w http.ResponseWriter, r *http.Request, p provider.Provider, clientUser provider.User, endpoint string, upstreamURL *url.URL) {
 	spec := h.newCacheSpec(p, endpoint, upstreamURL, r.Header.Clone())
 	response, fromCache, err := h.cache.GetOrFetch(r.Context(), spec)
 	if err != nil {
@@ -47,22 +47,23 @@ func (h *Handler) serveCached(w http.ResponseWriter, r *http.Request, p provider
 
 	body := response.Body
 	if endpoint == "get.php" {
-		body = h.rewriteM3UPlaylist(p, body)
+		body = h.rewriteM3UPlaylist(p, clientUser, body)
 	}
 	items := -1
 	if response.ItemCountKnown {
 		items = response.ItemCount
 	}
 	h.trace(r.Context(), "debug", "cache.result", "IPTV metadata response ready", map[string]any{
-		"providerId":   p.ID,
-		"providerName": p.Name,
-		"endpoint":     endpoint,
-		"action":       upstreamURL.Query().Get("action"),
-		"cacheKey":     spec.Key,
-		"cache":        cacheState,
-		"status":       response.Status,
-		"bytes":        len(body),
-		"items":        items,
+		"providerId":     p.ID,
+		"providerName":   p.Name,
+		"clientUsername": clientUser.Username,
+		"endpoint":       endpoint,
+		"action":         upstreamURL.Query().Get("action"),
+		"cacheKey":       spec.Key,
+		"cache":          cacheState,
+		"status":         response.Status,
+		"bytes":          len(body),
+		"items":          items,
 	})
 	w.WriteHeader(response.Status)
 	_, _ = w.Write(body)
@@ -75,6 +76,9 @@ func (h *Handler) fetchCacheable(ctx context.Context, p provider.Provider, endpo
 		return cachepkg.Response{}, err
 	}
 	copySafeRequestHeaders(req.Header, sourceHeaders)
+	// Cache validation operates on the provider's original JSON/XML/M3U bytes.
+	// Asking for identity encoding also avoids storing client-specific compressed variants.
+	req.Header.Del("Accept-Encoding")
 	h.trace(ctx, "debug", "upstream.request", "Requesting IPTV metadata from provider", map[string]any{
 		"providerId":    p.ID,
 		"providerName":  p.Name,

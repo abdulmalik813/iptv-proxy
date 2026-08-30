@@ -16,6 +16,7 @@ services:
       APP_URL: ${APP_URL:?APP_URL is required}
       GO_PROXY_ADDR: :8080
       REDIS_ADDR: redis:6379
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
       COOKIE_SECURE: ${COOKIE_SECURE:-true}
       INITIAL_ADMIN_USERNAME: ${INITIAL_ADMIN_USERNAME:-admin}
       INITIAL_ADMIN_PASSWORD: ${INITIAL_ADMIN_PASSWORD:-}
@@ -38,11 +39,14 @@ services:
   redis:
     image: redis:8-alpine
     restart: unless-stopped
-    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec"]
+    environment:
+      INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN:?INTERNAL_API_TOKEN is required}
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+    command: ["/bin/sh", "-c", "PASSWORD=\"$${REDIS_PASSWORD:-$$INTERNAL_API_TOKEN}\"; exec redis-server --appendonly yes --appendfsync everysec --requirepass \"$$PASSWORD\""]
     volumes:
       - iptv-redis-data:/data
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD-SHELL", "PASSWORD=\"$${REDIS_PASSWORD:-$$INTERNAL_API_TOKEN}\"; redis-cli -a \"$$PASSWORD\" --no-auth-warning ping"]
       interval: 10s
       timeout: 3s
       retries: 5

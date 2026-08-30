@@ -10,7 +10,9 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
 	cachepkg "github.com/abdulmalik813/iptv-proxy/internal/cache"
@@ -26,10 +28,17 @@ func main() {
 	uiURL := envOr("UI_URL", "http://localhost:3000/ui")
 	appURL := envOr("APP_URL", "http://localhost:8080")
 	redisAddr := envOr("REDIS_ADDR", "redis:6379")
-	internalToken := os.Getenv("INTERNAL_API_TOKEN")
+	internalToken := strings.TrimSpace(os.Getenv("INTERNAL_API_TOKEN"))
 	if internalToken == "" {
 		log.Fatal("INTERNAL_API_TOKEN is required by the Go core")
 	}
+	redisPassword := strings.TrimSpace(os.Getenv("REDIS_PASSWORD"))
+	if redisPassword == "" {
+		redisPassword = internalToken
+	}
+
+	rootCtx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
 
 	parsedUIURL, err := url.Parse(uiURL)
 	if err != nil {
@@ -40,8 +49,9 @@ func main() {
 		uiBasePath = "/"
 	}
 
-	redisClient := redis.NewClient(&redis.Options{Addr: redisAddr})
-	pingCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	redisClient := redis.NewClient(&redis.Options{Addr: redisAddr, Password: redisPassword})
+	defer redisClient.Close()
+	pingCtx, cancel := context.WithTimeout(rootCtx, 10*time.Second)
 	if err := waitForRedis(pingCtx, redisClient); err != nil {
 		cancel()
 		log.Fatalf("Redis is unavailable: %v", err)
@@ -52,7 +62,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	registry.Start(context.Background())
+	registry.Start(rootCtx)
 	resolver := routing.NewResolver(registry)
 	cacheManager := cachepkg.NewManager(redisClient)
 	traceLogger := proxylog.New(uiURL, internalToken)
@@ -72,7 +82,7 @@ func main() {
 	})
 	iptvHandler := proxycore.NewHandler(resolver, cacheManager, redisClient, traceLogger, appURL)
 
-	rehydrateCtx, rehydrateCancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	rehydrateCtx, rehydrateCancel := context.WithTimeout(rootCtx, 2*time.Minute)
 	if count, err := iptvHandler.RehydratePersistedCache(rehydrateCtx); err != nil {
 		log.Printf("persisted cache rehydration restored %d entries with warnings: %v", count, err)
 	} else {
@@ -109,6 +119,23 @@ func main() {
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"success": true, "data": iptvHandler.LiveSnapshots()})
+	})
+	mux.HandleFunc("/internal/providers/refresh", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			methodNotAllowed(w, http.MethodPost)
+			return
+		}
+		if !validInternalToken(r, internalToken) {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+		defer cancel()
+		if err := registry.Refresh(ctx); err != nil {
+			writeJSON(w, http.StatusBadGateway, map[string]any{"success": false, "error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"success": true})
 	})
 	mux.HandleFunc("/internal/cache", func(w http.ResponseWriter, r *http.Request) {
 		if !validInternalToken(r, internalToken) {
@@ -187,11 +214,26 @@ func main() {
 		})
 	}
 
-	server := &http.Server{Addr: addr, Handler: mux, ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 90 * time.Second}
+	server := &http.Server{
+		Addr:              addr,
+		Handler:           mux,
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       90 * time.Second,
+	}
+	go func() {
+		<-rootCtx.Done()
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer shutdownCancel()
+		if err := server.Shutdown(shutdownCtx); err != nil {
+			log.Printf("Go core graceful shutdown failed: %v", err)
+		}
+	}()
+
 	log.Printf("IPTV Proxy Go core listening on %s; Redis %s; admin UI %s", addr, redisAddr, uiBasePath)
 	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Fatal(err)
 	}
+	log.Printf("IPTV Proxy Go core stopped")
 }
 
 func envOr(name, fallback string) string {

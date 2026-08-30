@@ -2,6 +2,17 @@ export interface User {
   id: string;
   username: string;
   password_hash: string;
+  session_version: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface IptvProviderUser {
+  id: string;
+  provider_id: string;
+  username: string;
+  password_hash: string;
+  enabled: number;
   created_at: string;
   updated_at: string;
 }
@@ -15,6 +26,7 @@ export interface IptvProvider {
   upstream_password: string;
   local_username: string;
   local_password: string;
+  users?: IptvProviderUser[];
   is_default: number;
   cache_duration_hours: number;
   enabled: number;

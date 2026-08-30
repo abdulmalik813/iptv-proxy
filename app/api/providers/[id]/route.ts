@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { getSessionUser } from '@/lib/auth/session';
 import { validateMutationRequest } from '@/lib/auth/request-security';
 import { ProviderService } from '@/lib/services/provider.service';
+import { refreshGoProviderRegistry } from '@/lib/services/provider-registry-sync.service';
 
 const updateProviderSchema = z.object({
   name: z.string().trim().min(1).max(128).optional(),
@@ -38,8 +39,12 @@ export async function PUT(req: NextRequest, { params }: Context) {
     const user = await getSessionUser();
     if (!user) return NextResponse.json({ success: false, error: 'Unauthorized' }, { status: 401 });
     const parsed = updateProviderSchema.safeParse(await req.json());
-    if (!parsed.success) return NextResponse.json({ success: false, error: parsed.error.issues[0]?.message || 'Invalid input' }, { status: 400 });
-    return NextResponse.json({ success: true, data: await ProviderService.updateProvider((await params).id, parsed.data) });
+    if (!parsed.success) {
+      return NextResponse.json({ success: false, error: parsed.error.issues[0]?.message || 'Invalid input' }, { status: 400 });
+    }
+    const provider = await ProviderService.updateProvider((await params).id, parsed.data);
+    const registryRefreshed = await refreshGoProviderRegistry();
+    return NextResponse.json({ success: true, data: provider, registryRefreshed });
   } catch (error) {
     return NextResponse.json({ success: false, error: error instanceof Error ? error.message : String(error) }, { status: 400 });
   }
@@ -52,7 +57,8 @@ export async function DELETE(req: NextRequest, { params }: Context) {
     const user = await getSessionUser();
     if (!user) return NextResponse.json({ success: false, error: 'Unauthorized' }, { status: 401 });
     await ProviderService.deleteProvider((await params).id);
-    return NextResponse.json({ success: true, message: 'Provider deleted successfully' });
+    const registryRefreshed = await refreshGoProviderRegistry();
+    return NextResponse.json({ success: true, message: 'Provider deleted successfully', registryRefreshed });
   } catch (error) {
     return NextResponse.json({ success: false, error: error instanceof Error ? error.message : String(error) }, { status: 400 });
   }

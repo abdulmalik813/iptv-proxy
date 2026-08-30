@@ -1,5 +1,5 @@
-#!/bin/sh
-set -eu
+#!/bin/bash
+set -euo pipefail
 
 mkdir -p /data /data/warp /tmp/vpn /tmp/vpn/wireguard /tmp/vpn/openvpn /run/dbus
 chmod 700 /data /data/warp 2>/dev/null || true
@@ -30,18 +30,48 @@ GO_PID=$!
 node server.js &
 NEXT_PID=$!
 
+SHUTTING_DOWN=0
 shutdown() {
-  kill -TERM "$NEXT_PID" "$GO_PID" 2>/dev/null || true
-  wait "$NEXT_PID" 2>/dev/null || true
-  wait "$GO_PID" 2>/dev/null || true
+  if [ "$SHUTTING_DOWN" -eq 1 ]; then
+    return
+  fi
+  SHUTTING_DOWN=1
+  trap - INT TERM
+
+  for pid in "$NEXT_PID" "$GO_PID"; do
+    if kill -0 "$pid" 2>/dev/null; then
+      kill -TERM "$pid" 2>/dev/null || true
+    fi
+  done
+
+  set +e
+  wait "$NEXT_PID" 2>/dev/null
+  wait "$GO_PID" 2>/dev/null
+  set -e
 }
 
-trap shutdown INT TERM
+on_signal() {
+  shutdown
+  exit 143
+}
+trap on_signal INT TERM
 
-# Keep the container lifetime tied to Next.js. The combined healthcheck also
-# marks the service unhealthy if the Go process or port 8080 stops responding.
-wait "$NEXT_PID"
-NEXT_STATUS=$?
-kill -TERM "$GO_PID" 2>/dev/null || true
-wait "$GO_PID" 2>/dev/null || true
-exit "$NEXT_STATUS"
+# The container is healthy only while both primary processes are alive. If
+# either process exits unexpectedly, stop its peer and let Docker's restart
+# policy restart the whole shared network namespace cleanly.
+EXITED_PID=''
+set +e
+wait -n -p EXITED_PID "$NEXT_PID" "$GO_PID"
+EXIT_STATUS=$?
+set -e
+
+if [ "$EXITED_PID" = "$GO_PID" ]; then
+  echo "Go core exited with status $EXIT_STATUS; stopping Next.js so the container can restart." >&2
+elif [ "$EXITED_PID" = "$NEXT_PID" ]; then
+  echo "Next.js exited with status $EXIT_STATUS; stopping Go core so the container can restart." >&2
+else
+  echo "A primary application process exited with status $EXIT_STATUS; restarting the container." >&2
+fi
+
+shutdown
+exit "$EXIT_STATUS"

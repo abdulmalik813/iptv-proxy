@@ -8,10 +8,14 @@ import { getSessionSecret, shouldUseSecureCookie } from './secret';
 const SESSION_COOKIE_NAME = 'iptv_proxy_session';
 const SESSION_MAX_AGE_SECONDS = 60 * 60 * 24 * 7;
 
-export interface SessionPayload { userId: string; username: string }
+export interface SessionPayload {
+  userId: string;
+  username: string;
+  sessionVersion: number;
+}
 
-export async function createSessionToken(user: { id: string; username: string }): Promise<string> {
-  return new SignJWT({ userId: user.id, username: user.username })
+export async function createSessionToken(user: { id: string; username: string; session_version: number }): Promise<string> {
+  return new SignJWT({ userId: user.id, username: user.username, sessionVersion: user.session_version })
     .setProtectedHeader({ alg: 'HS256' })
     .setIssuedAt()
     .setJti(crypto.randomUUID())
@@ -22,9 +26,19 @@ export async function createSessionToken(user: { id: string; username: string })
 export async function verifySessionToken(token: string): Promise<SessionPayload | null> {
   try {
     const { payload } = await jwtVerify(token, getSessionSecret(), { algorithms: ['HS256'] });
-    if (typeof payload.userId !== 'string' || typeof payload.username !== 'string') return null;
-    return { userId: payload.userId, username: payload.username };
-  } catch { return null; }
+    if (
+      typeof payload.userId !== 'string'
+      || typeof payload.username !== 'string'
+      || typeof payload.sessionVersion !== 'number'
+    ) return null;
+    return {
+      userId: payload.userId,
+      username: payload.username,
+      sessionVersion: payload.sessionVersion,
+    };
+  } catch {
+    return null;
+  }
 }
 
 export async function getSessionUser(): Promise<User | null> {
@@ -33,16 +47,40 @@ export async function getSessionUser(): Promise<User | null> {
   if (!token) return null;
   const payload = await verifySessionToken(token);
   if (!payload) return null;
-  const result = await getDb().execute({ sql: 'SELECT id, username, password_hash, created_at, updated_at FROM users WHERE id = ?', args: [payload.userId] });
+  const result = await getDb().execute({
+    sql: 'SELECT id, username, password_hash, session_version, created_at, updated_at FROM users WHERE id = ?',
+    args: [payload.userId],
+  });
   if (!result.rows.length) return null;
   const row = result.rows[0];
-  return { id: String(row.id), username: String(row.username), password_hash: String(row.password_hash), created_at: String(row.created_at), updated_at: String(row.updated_at) };
+  const sessionVersion = Number(row.session_version || 1);
+  if (sessionVersion !== payload.sessionVersion) return null;
+  return {
+    id: String(row.id),
+    username: String(row.username),
+    password_hash: String(row.password_hash),
+    session_version: sessionVersion,
+    created_at: String(row.created_at),
+    updated_at: String(row.updated_at),
+  };
 }
 
 export async function setSessionCookie(token: string): Promise<void> {
-  (await cookies()).set(SESSION_COOKIE_NAME, token, { httpOnly: true, secure: shouldUseSecureCookie(), sameSite: 'lax', path: '/', maxAge: SESSION_MAX_AGE_SECONDS });
+  (await cookies()).set(SESSION_COOKIE_NAME, token, {
+    httpOnly: true,
+    secure: shouldUseSecureCookie(),
+    sameSite: 'lax',
+    path: '/',
+    maxAge: SESSION_MAX_AGE_SECONDS,
+  });
 }
 
 export async function clearSessionCookie(): Promise<void> {
-  (await cookies()).set(SESSION_COOKIE_NAME, '', { httpOnly: true, secure: shouldUseSecureCookie(), sameSite: 'lax', path: '/', maxAge: 0 });
+  (await cookies()).set(SESSION_COOKIE_NAME, '', {
+    httpOnly: true,
+    secure: shouldUseSecureCookie(),
+    sameSite: 'lax',
+    path: '/',
+    maxAge: 0,
+  });
 }

@@ -1,6 +1,6 @@
 # IPTV Proxy
 
-Self-hosted IPTV proxy appliance with a Next.js administration UI, Go proxy core, SQLite persistence, and container-managed VPN routing.
+Self-hosted IPTV proxy appliance with a Next.js administration UI, Go proxy core, SQLite persistence, Redis runtime/cache state, and container-managed VPN routing.
 
 ## Architecture
 
@@ -10,6 +10,7 @@ One container runs both application processes so they always share the same netw
 - Go proxy core on port `8080`
 - WireGuard, OpenVPN/VPNGate, and Cloudflare WARP
 - SQLite database at `/data/iptv-proxy.db`
+- Redis for cache generations, locks, HLS routing tokens, and runtime state
 
 `UI_URL` controls the Next.js base path. `APP_URL` is the public root URL for the Go proxy.
 
@@ -25,7 +26,13 @@ Route `/ui/*` to port `3000` and IPTV/root traffic to port `8080`.
 ## Current Features
 
 - First-run administrator setup and session authentication
+- Administrator password changes with old-session invalidation
 - IPTV provider CRUD and provider route validation
+- Multiple independent client users per IPTV provider
+- Add, edit, disable, change password, and remove provider client users
+- Client passwords stored as salted one-way verifiers rather than recoverable plaintext
+- Per-user Xtream, live, VOD, series, M3U, XMLTV, and catch-up authentication
+- Shared provider metadata cache with per-request M3U credential rewriting
 - WireGuard profile CRUD and connection management
 - OpenVPN profile CRUD and connection management
 - VPNGate relay discovery, search, pagination, save, connect, and retry
@@ -34,9 +41,11 @@ Route `/ui/*` to port `3000` and IPTV/root traffic to port `8080`.
 - Current outgoing IP, server, and location reporting
 - Container egress upload/download speed test
 - Go core runtime health indicator in the admin UI
-- SQLite WAL mode
+- SQLite WAL mode with verified pre-migration snapshots
+- Authenticated Redis persistence for cache/runtime state
 - Persistent application logs with filtering and live SSE updates
 - Authenticated CRUD API for logs, including internal Go-core access
+- Shared-container process supervision and graceful Go shutdown
 
 ## Required Production Environment
 
@@ -47,32 +56,37 @@ UI_URL=https://iptv.example.com/ui
 APP_URL=https://iptv.example.com
 ```
 
+Recommended optional Redis-specific secret:
+
+```env
+REDIS_PASSWORD=<secure random value>
+```
+
 Generate secrets with:
 
 ```bash
 openssl rand -hex 32
 ```
 
-`INTERNAL_API_TOKEN` is server-side only. The Go core can authenticate to management APIs with:
+`INTERNAL_API_TOKEN` is required and server-side only. Redis is always password protected: when `REDIS_PASSWORD` is configured it is used as the Redis secret; otherwise the server reuses `INTERNAL_API_TOKEN` so existing deployments can upgrade without becoming unavailable. A separate `REDIS_PASSWORD` is recommended for secret separation. Do not expose either value to browsers or IPTV clients.
+
+The Go core authenticates to management APIs with:
 
 ```text
 Authorization: Bearer <INTERNAL_API_TOKEN>
 ```
 
-Do not expose this token to browsers or IPTV clients.
-
 ## Dokploy
 
-Use `docker-compose.dokploy.yml`. Dokploy manages its own service network, so that Compose file intentionally does not declare a Docker network.
+Use `docker-compose.dokploy.yml`. Dokploy manages its own service network, so that Compose file intentionally does not declare a Docker network or duplicate TLS configuration.
 
-The container requires:
+The application container requires:
 
 - `NET_ADMIN`
 - `/dev/net/tun`
-- IPv4 forwarding
-- `net.ipv4.conf.all.src_valid_mark=1`
+- IPv4 forwarding (`net.ipv4.ip_forward=1`)
 
-The healthcheck verifies both Next.js and the Go core.
+The application and Redis healthchecks must both pass before the stack is considered healthy. Redis authentication is enabled on every production start. Existing deployments do not have to add a new variable immediately because `INTERNAL_API_TOKEN` is the secure fallback.
 
 ## Development
 
@@ -85,7 +99,7 @@ pnpm install
 pnpm dev
 ```
 
-Run the Go core separately during development when needed:
+Run the Go core separately during development when needed. `INTERNAL_API_TOKEN` must be set; `REDIS_PASSWORD` can optionally override the Redis credential:
 
 ```bash
 go run ./cmd/proxy
@@ -132,13 +146,17 @@ Browser administration uses the authenticated session. Internal services use `IN
 
 ## Security
 
-Uploaded WireGuard profiles reject executable hook directives. OpenVPN profiles reject executable/plugin authentication hooks and only support TUN mode. Sensitive log fields are redacted before persistence. Provider passwords are masked in public management responses.
+Administrator passwords use bcrypt. Provider client passwords are migrated to salted PBKDF2-SHA256 verifiers and plaintext client-password columns are cleared and protected against future writes. Provider upstream credentials remain server-side and are masked from public management responses. Sensitive request/log fields are redacted. Uploaded WireGuard profiles reject executable hook directives. OpenVPN profiles reject executable/plugin authentication hooks and only support TUN mode. The admin UI sends baseline CSP, framing, content-type, referrer, permissions, and cross-domain-policy headers. Redis requires authentication in production.
+
+Before a pending SQLite schema migration, the application runs `quick_check`, writes a SQLite-consistent `VACUUM INTO` snapshot under `/data/backups`, verifies the snapshot, and only then applies the migration. The newest five migration snapshots are retained.
 
 ## Checks
 
-The independent Test workflow verifies:
+The Test workflow verifies:
 
-- regression contracts
+- regression and security contracts
+- provider multi-user/password isolation behavior
+- Redis-backed cache scenarios
 - Go formatting, vet, tests, and build
 - ESLint
 - TypeScript
