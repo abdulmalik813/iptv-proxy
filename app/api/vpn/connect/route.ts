@@ -13,28 +13,17 @@ export async function POST(req: NextRequest) {
   try {
     const requestError = validateMutationRequest(req);
     if (requestError) return NextResponse.json({ success: false, error: requestError }, { status: 403 });
-
     const user = await getSessionUser();
     if (!user) return NextResponse.json({ success: false, error: 'Unauthorized' }, { status: 401 });
-
     if (VpnManager.isOperationInProgress()) {
-      return NextResponse.json(
-        { success: false, error: 'Another VPN operation is already in progress.' },
-        { status: 409 }
-      );
+      return NextResponse.json({ success: false, error: 'Another VPN operation is already in progress.' }, { status: 409 });
     }
 
     const parsed = connectSchema.safeParse(await req.json());
-    if (!parsed.success) {
-      return NextResponse.json(
-        { success: false, error: parsed.error.issues[0]?.message || 'Invalid parameters' },
-        { status: 400 }
-      );
-    }
+    if (!parsed.success) return NextResponse.json({ success: false, error: parsed.error.issues[0]?.message || 'Invalid parameters' }, { status: 400 });
 
     const { type, profileId } = parsed.data;
     let result: { success: boolean; error?: string };
-
     if (type === 'wireguard') {
       if (!profileId) return NextResponse.json({ success: false, error: 'profileId is required.' }, { status: 400 });
       result = await VpnManager.connectWireguard(profileId);
@@ -45,13 +34,14 @@ export async function POST(req: NextRequest) {
       result = await VpnManager.connectWarp();
     }
 
+    const state = await VpnManager.getVpnStatusSummary();
     if (!result.success) {
-      return NextResponse.json({ success: false, error: result.error || 'VPN connection failed.' }, { status: 500 });
+      const conflict = state.status === 'connected' || /already connected|disconnect the current vpn|already being established/i.test(result.error || '');
+      return NextResponse.json({ success: false, error: result.error || 'VPN connection failed.', data: state }, { status: conflict ? 409 : 500 });
     }
-
-    return NextResponse.json({ success: true, data: await VpnManager.getVpnStatusSummary() });
+    return NextResponse.json({ success: true, data: state });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    return NextResponse.json({ success: false, error: message }, { status: 500 });
+    return NextResponse.json({ success: false, error: message, data: await VpnManager.getVpnStatusSummary().catch(() => null) }, { status: 500 });
   }
 }
