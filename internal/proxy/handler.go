@@ -10,6 +10,7 @@ import (
 	"time"
 
 	cachepkg "github.com/abdulmalik813/iptv-proxy/internal/cache"
+	proxylog "github.com/abdulmalik813/iptv-proxy/internal/logging"
 	"github.com/abdulmalik813/iptv-proxy/internal/routing"
 	"github.com/abdulmalik813/iptv-proxy/internal/stream"
 	"github.com/redis/go-redis/v9"
@@ -47,12 +48,13 @@ type Handler struct {
 	cache          *cachepkg.Manager
 	redis          *redis.Client
 	live           *stream.Manager
+	logger         *proxylog.Client
 	appURL         string
 	metadataClient *http.Client
 	streamClient   *http.Client
 }
 
-func NewHandler(resolver *routing.Resolver, cache *cachepkg.Manager, redisClient *redis.Client, appURL string) *Handler {
+func NewHandler(resolver *routing.Resolver, cache *cachepkg.Manager, redisClient *redis.Client, logger *proxylog.Client, appURL string) *Handler {
 	transport := &http.Transport{
 		Proxy:                 http.ProxyFromEnvironment,
 		ForceAttemptHTTP2:     false,
@@ -68,6 +70,7 @@ func NewHandler(resolver *routing.Resolver, cache *cachepkg.Manager, redisClient
 		cache:    cache,
 		redis:    redisClient,
 		live:     stream.NewManager(),
+		logger:   logger,
 		appURL:   strings.TrimSuffix(appURL, "/"),
 		metadataClient: &http.Client{
 			Transport: transport.Clone(),
@@ -78,30 +81,73 @@ func NewHandler(resolver *routing.Resolver, cache *cachepkg.Manager, redisClient
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	resolved, err := h.resolver.Resolve(r.Context(), r.URL.Path)
+	ctx, trace := withTrace(r.Context())
+	r = r.WithContext(ctx)
+	recorder := &responseRecorder{ResponseWriter: w}
+	recorder.Header().Set("X-IPTV-Trace-ID", trace.ID)
+	h.trace(ctx, "info", "request.received", "IPTV client request received", safeRequestMeta(r))
+	defer func() {
+		status := recorder.status
+		if status == 0 {
+			status = http.StatusOK
+		}
+		level := "info"
+		if status >= 500 {
+			level = "error"
+		} else if status >= 400 {
+			level = "warning"
+		}
+		h.trace(ctx, level, "request.completed", "IPTV client request completed", map[string]any{
+			"status":    status,
+			"bytesOut":  recorder.bytes,
+			"elapsedMs": time.Since(trace.Started).Milliseconds(),
+		})
+	}()
+
+	resolved, err := h.resolver.Resolve(ctx, r.URL.Path)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusServiceUnavailable)
+		h.trace(ctx, "error", "route.resolve", "Provider route resolution failed", map[string]any{"error": err.Error()})
+		http.Error(recorder, err.Error(), http.StatusServiceUnavailable)
 		return
 	}
+	h.trace(ctx, "debug", "route.resolve", "Provider route resolved", map[string]any{
+		"providerId":    resolved.Provider.ID,
+		"providerName":  resolved.Provider.Name,
+		"providerRoute": resolved.Provider.Route,
+		"matchedBy":     string(resolved.MatchedBy),
+	})
+
 	if strings.HasPrefix(resolved.RemainingPath, "/_hls/") {
-		h.serveHLSToken(w, r, resolved)
+		h.trace(ctx, "debug", "hls.token", "Handling proxied HLS child request", providerMeta(resolved.Provider, "_hls", nil))
+		h.serveHLSToken(recorder, r, resolved)
 		return
 	}
 
 	upstreamURL, endpoint, err := buildUpstreamURL(resolved, r)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusUnauthorized)
+		h.trace(ctx, "warning", "request.rewrite", "IPTV request validation or rewrite failed", map[string]any{
+			"providerId":   resolved.Provider.ID,
+			"providerName": resolved.Provider.Name,
+			"endpoint":     endpoint,
+			"error":        err.Error(),
+		})
+		http.Error(recorder, err.Error(), http.StatusUnauthorized)
 		return
 	}
+	h.trace(ctx, "debug", "request.rewrite", "Request rewritten for upstream provider", providerMeta(resolved.Provider, endpoint, upstreamURL))
+
 	if isCacheable(endpoint, r.URL.Query()) {
-		h.serveCached(w, r, resolved.Provider, endpoint, upstreamURL)
+		h.trace(ctx, "debug", "cache.route", "Request routed through metadata cache", providerMeta(resolved.Provider, endpoint, upstreamURL))
+		h.serveCached(recorder, r, resolved.Provider, endpoint, upstreamURL)
 		return
 	}
 	if shouldMultiplexLive(r, endpoint, upstreamURL) {
-		h.serveLiveMultiplexed(w, r, resolved.Provider, upstreamURL)
+		h.trace(ctx, "debug", "live.route", "Request routed through live stream multiplexer", providerMeta(resolved.Provider, endpoint, upstreamURL))
+		h.serveLiveMultiplexed(recorder, r, resolved.Provider, upstreamURL)
 		return
 	}
-	h.serveDirect(w, r, resolved.Provider, upstreamURL)
+	h.trace(ctx, "debug", "direct.route", "Request routed through direct media proxy", providerMeta(resolved.Provider, endpoint, upstreamURL))
+	h.serveDirect(recorder, r, resolved.Provider, upstreamURL)
 }
 
 func buildUpstreamURL(resolved routing.Resolved, r *http.Request) (*url.URL, string, error) {
