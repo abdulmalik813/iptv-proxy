@@ -38,15 +38,19 @@ test('Go routing only forwards recognized authenticated IPTV endpoint families',
   assert.match(handler, /invalid IPTV credentials/);
 });
 
-test('Go cache cold-loads provider data and refreshes automatically at 30 percent remaining', async () => {
+test('Go cache fails closed on a miss, starts a background refill, and refreshes at 30 percent remaining', async () => {
   const cache = compact(await source('internal/cache/manager.go'));
+  const cacheProxy = compact(await source('internal/proxy/cache_proxy.go'));
   assert.match(cache, /refreshThreshold = 0\.30/);
+  assert.match(cache, /ErrCacheUnavailable/);
+  assert.match(cache, /m\.refillMissing\(key, ttl, fetch\)/);
+  assert.match(cache, /return Response\{\}, false, ErrCacheUnavailable/);
   assert.match(cache, /SetNX/);
-  assert.match(cache, /fresh\s*,\s*err\s*:=\s*fetch\(ctx\)/);
   assert.match(cache, /time\.AfterFunc/);
   assert.match(cache, /1\s*-\s*refreshThreshold/);
-  assert.match(cache, /m\.put\(refreshCtx\s*,\s*key\s*,\s*ttl\s*,\s*fresh\)/);
-  assert.doesNotMatch(cache, /Del\([^)]*,\s*key\s*\)/);
+  assert.match(cache, /m\.put\(ctx, key, ttl, fresh\)/);
+  assert.match(cacheProxy, /StatusServiceUnavailable/);
+  assert.match(cacheProxy, /Retry-After/);
 });
 
 test('cache duration zero bypasses Redis and calls the provider directly', async () => {
@@ -54,18 +58,25 @@ test('cache duration zero bypasses Redis and calls the provider directly', async
   assert.match(cache, /if ttl\s*<=\s*0\s*\{\s*resp\s*,\s*err\s*:=\s*fetch\(ctx\)/);
 });
 
-test('cache runtime management keeps refresh separate from purge', async () => {
+test('purge fetches and validates replacement before atomically replacing old cache', async () => {
   const cache = compact(await source('internal/cache/manager.go'));
   const main = await source('cmd/proxy/main.go');
-  const route = await source('app/api/system/cache/route.ts');
-  assert.match(cache, /RefreshNow/);
+  const page = await source('app/cache/page.tsx');
+  assert.match(cache, /func \(m \*Manager\) Purge\(/);
+  assert.match(cache, /return m\.replaceNow\(ctx, key\)/);
+  assert.match(cache, /fresh, err := spec\.fetch\(refreshCtx\)/);
+  assert.match(cache, /m\.put\(refreshCtx, key, spec\.ttl, fresh\)/);
+  assert.doesNotMatch(cache, /m\.client\.Del\(ctx, key/);
+  assert.match(main, /"replaced": count/);
+  assert.match(main, /"replaced": 1/);
+  assert.match(page, /fresh provider data was fetched and validated before the old value was atomically replaced/);
+});
+
+test('purge all never deletes unregistered cache entries and only replaces entries with active fetch specs', async () => {
+  const cache = compact(await source('internal/cache/manager.go'));
   assert.match(cache, /PurgeAll/);
-  assert.match(cache, /spec\.fetch\(refreshCtx\)/);
-  assert.match(main, /\/internal\/cache/);
-  assert.match(main, /\/internal\/cache\/refresh/);
-  assert.match(route, /INTERNAL_API_TOKEN/);
-  assert.match(route, /method: 'POST'/);
-  assert.match(route, /method: 'DELETE'/);
+  assert.match(cache, /if !registered \{ continue \}/);
+  assert.match(cache, /m\.replaceNow\(ctx, entry\.Key\)/);
 });
 
 test('cached IPTV metadata validates replacements before storing them', async () => {
