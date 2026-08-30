@@ -64,7 +64,12 @@ jobs:
         run: pnpm test
 
       - name: Go formatting
-        run: test -z "$(gofmt -l .)"
+        run: |
+          files="$(gofmt -l .)"
+          if [ -n "$files" ]; then
+            printf '%s\n' "$files"
+            exit 1
+          fi
 
       - name: Go vet
         run: go vet ./...
