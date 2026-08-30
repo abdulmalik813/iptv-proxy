@@ -13,6 +13,9 @@ type OpenvpnProfile = { id:string; name:string; remotes:string[]; proto:string|n
 type VpnGateServer = { id:string; ip:string; hostname:string; countryLong:string; countryShort:string; ping:number; speed:number; score:number; sessions:number; uptime:number };
 type WarpStatus = { installed:boolean; daemonRunning:boolean; registered:boolean; connected:boolean; mode?:string; accountType?:string; deviceId?:string; details:string };
 
+const UI_BASE = process.env.NEXT_PUBLIC_UI_BASE_PATH || '/ui';
+const apiPath = (path: string) => `${UI_BASE}${path}`;
+
 async function json(res: Response) { try { return await res.json(); } catch { return { success:false, error:`HTTP ${res.status}` }; } }
 
 export default function VpnPage() {
@@ -24,18 +27,28 @@ export default function VpnPage() {
   const [wg,setWg]=useState<WireguardProfile[]>([]);
   const [ovpn,setOvpn]=useState<OpenvpnProfile[]>([]);
   const [gate,setGate]=useState<VpnGateServer[]>([]);
+  const [gateRefreshing,setGateRefreshing]=useState(false);
   const [warp,setWarp]=useState<WarpStatus|null>(null);
   const [busy,setBusy]=useState<string|null>(null);
   const [error,setError]=useState<string|null>(null);
   const [search,setSearch]=useState('');
 
-  const loadStatus=useCallback(async()=>{ const r=await fetch('/api/vpn/status',{cache:'no-store'}); if(r.status===401){router.replace('/login');return;} const b=await json(r); if(r.ok&&b.success)setSummary(b.data); },[router]);
-  const loadWg=useCallback(async()=>{const r=await fetch('/api/vpn/wireguard',{cache:'no-store'});const b=await json(r);if(r.ok&&b.success)setWg(b.data);},[]);
-  const loadOvpn=useCallback(async()=>{const r=await fetch('/api/vpn/openvpn',{cache:'no-store'});const b=await json(r);if(r.ok&&b.success)setOvpn(b.data);},[]);
-  const loadWarp=useCallback(async()=>{const r=await fetch('/api/vpn/warp',{cache:'no-store'});const b=await json(r);if(r.ok&&b.success)setWarp(b.data);},[]);
-  const loadGate=useCallback(async(refresh=false)=>{const r=await fetch(`/api/vpn/vpngate?refresh=${refresh}`,{cache:'no-store'});const b=await json(r);if(r.ok&&b.success)setGate(b.data);else setError(b.error||'Failed to load VPNGate');},[]);
+  const loadStatus=useCallback(async()=>{ const r=await fetch(apiPath('/api/vpn/status'),{cache:'no-store'}); if(r.status===401){router.replace('/login');return;} const b=await json(r); if(r.ok&&b.success)setSummary(b.data); },[router]);
+  const loadWg=useCallback(async()=>{const r=await fetch(apiPath('/api/vpn/wireguard'),{cache:'no-store'});const b=await json(r);if(r.ok&&b.success)setWg(b.data);},[]);
+  const loadOvpn=useCallback(async()=>{const r=await fetch(apiPath('/api/vpn/openvpn'),{cache:'no-store'});const b=await json(r);if(r.ok&&b.success)setOvpn(b.data);},[]);
+  const loadWarp=useCallback(async()=>{const r=await fetch(apiPath('/api/vpn/warp'),{cache:'no-store'});const b=await json(r);if(r.ok&&b.success)setWarp(b.data);},[]);
+  const loadGate=useCallback(async(refresh=false)=>{
+    if(refresh)setGateRefreshing(true);
+    try {
+      const r=await fetch(apiPath(`/api/vpn/vpngate?refresh=${refresh}`),{cache:'no-store'});
+      const b=await json(r);
+      if(r.ok&&b.success)setGate(b.data);else setError(b.error||'Failed to load VPNGate');
+    } finally {
+      if(refresh)setGateRefreshing(false);
+    }
+  },[]);
 
-  useEffect(()=>{void (async()=>{const a=await fetch('/api/auth/me',{cache:'no-store'});const b=await json(a);if(a.status===401){router.replace('/login');return;}if(b.user)setUser(b.user);await loadStatus();})();const t=setInterval(()=>void loadStatus(),4000);return()=>clearInterval(t);},[loadStatus,router]);
+  useEffect(()=>{void (async()=>{const a=await fetch(apiPath('/api/auth/me'),{cache:'no-store'});const b=await json(a);if(a.status===401){router.replace('/login');return;}if(b.user)setUser(b.user);await loadStatus();})();const t=setInterval(()=>void loadStatus(),4000);return()=>clearInterval(t);},[loadStatus,router]);
   useEffect(()=>{if(tab==='wireguard')void loadWg();if(tab==='openvpn')void loadOvpn();if(tab==='vpngate')void loadGate(false);if(tab==='warp')void loadWarp();},[tab,loadWg,loadOvpn,loadGate,loadWarp]);
 
   const action=useCallback(async(label:string,fn:()=>Promise<Response>,after?:()=>Promise<void>)=>{setBusy(label);setError(null);try{const r=await fn();const b=await json(r);if(!r.ok||!b.success)throw new Error(b.error||`${label} failed`);if(after)await after();}catch(e){setError(e instanceof Error?e.message:String(e));}finally{await loadStatus().catch(()=>undefined);setBusy(null);}},[loadStatus]);
@@ -46,11 +59,11 @@ export default function VpnPage() {
   const canDisconnect=!operationBusy&&Boolean(active);
   const currentLabel=summary?.profileName||summary?.type||'None';
 
-  const connect=(type:'wireguard'|'openvpn',profileId:string)=>action(`Connecting ${type}`,()=>fetch('/api/vpn/connect',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({type,profileId})}));
-  const disconnect=()=>action('Disconnecting VPN',()=>fetch('/api/vpn/disconnect',{method:'POST'}));
-  const gateConnect=(s:VpnGateServer)=>action(`Connecting VPNGate ${s.countryShort}`,()=>fetch('/api/vpn/vpngate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'connect',serverId:s.id})}));
-  const gateSave=(s:VpnGateServer)=>action('Saving VPNGate profile',()=>fetch('/api/vpn/vpngate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'save',serverId:s.id})}),loadOvpn);
-  const warpAction=(a:'register'|'connect'|'disconnect'|'reset')=>action(`WARP ${a}`,()=>fetch('/api/vpn/warp',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:a})}),loadWarp);
+  const connect=(type:'wireguard'|'openvpn',profileId:string)=>action(`Connecting ${type}`,()=>fetch(apiPath('/api/vpn/connect'),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({type,profileId})}));
+  const disconnect=()=>action('Disconnecting VPN',()=>fetch(apiPath('/api/vpn/disconnect'),{method:'POST'}));
+  const gateConnect=(s:VpnGateServer)=>action(`Connecting VPNGate ${s.countryShort}`,()=>fetch(apiPath('/api/vpn/vpngate'),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'connect',serverId:s.id})}));
+  const gateSave=(s:VpnGateServer)=>action('Saving VPNGate profile',()=>fetch(apiPath('/api/vpn/vpngate'),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'save',serverId:s.id})}),loadOvpn);
+  const warpAction=(a:'register'|'connect'|'disconnect'|'reset')=>action(`WARP ${a}`,()=>fetch(apiPath('/api/vpn/warp'),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:a})}),loadWarp);
 
   const visibleGate=useMemo(()=>gate.filter(s=>!search||`${s.countryLong} ${s.countryShort} ${s.ip} ${s.hostname}`.toLowerCase().includes(search.toLowerCase())).slice(0,250),[gate,search]);
   const tabs:VpnTab[]=['overview','wireguard','openvpn','vpngate','warp'];
@@ -70,7 +83,7 @@ export default function VpnPage() {
 
       {tab==='openvpn'&&<section className="border border-neutral-800 bg-neutral-950"><div className="border-b border-neutral-800 p-4 text-xs font-bold uppercase text-white">OpenVPN Profiles</div>{ovpn.map(p=>{const isActive=active&&summary?.type==='openvpn'&&summary.profileId===p.id;return <div key={p.id} className="flex flex-wrap items-center justify-between gap-3 border-b border-neutral-900 p-4 text-xs"><div><div className="font-bold text-white">{p.name}</div><div className="text-neutral-500">{p.remotes?.[0]||'Configured'} · {p.source}</div></div><button disabled={!canConnect||isActive||!p.enabled} onClick={()=>void connect('openvpn',p.id)} className="border border-white bg-white px-3 py-1.5 font-bold uppercase text-black disabled:cursor-not-allowed disabled:opacity-30">{isActive?'Connected':'Connect'}</button></div>})}{!ovpn.length&&<div className="p-6 text-xs text-neutral-500">No OpenVPN profiles.</div>}</section>}
 
-      {tab==='vpngate'&&<section className="space-y-3"><div className="flex gap-2"><div className="relative flex-1"><Search className="absolute left-3 top-2.5 h-4 w-4 text-neutral-500"/><input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search country, IP, host" className="w-full border border-neutral-800 bg-black py-2 pl-9 pr-3 text-xs text-white"/></div><button onClick={()=>void loadGate(true)} className="border border-neutral-700 px-3 text-xs uppercase">Refresh</button></div><div className="border border-neutral-800 bg-neutral-950">{visibleGate.map(s=>{const isActive=active&&summary?.profileId===`vpngate:${s.id}`;return <div key={s.id} className="flex flex-wrap items-center justify-between gap-3 border-b border-neutral-900 p-3 text-xs"><div><strong className="text-white">{s.countryShort}</strong> <span className="text-neutral-400">{s.ip}</span><div className="text-[10px] text-neutral-500">{s.ping||'N/A'} ms · {(s.speed/1_000_000).toFixed(1)} Mbps</div></div><div className="flex gap-2"><button disabled={!canConnect||isActive} onClick={()=>void gateConnect(s)} className="flex items-center gap-1 border border-white bg-white px-2 py-1 font-bold uppercase text-black disabled:opacity-30"><Play className="h-3 w-3"/>{isActive?'Connected':'Connect'}</button><button disabled={operationBusy} onClick={()=>void gateSave(s)} className="flex items-center gap-1 border border-neutral-700 px-2 py-1 uppercase"><Save className="h-3 w-3"/>Save</button></div></div>})}</div></section>}
+      {tab==='vpngate'&&<section className="space-y-3"><div className="flex gap-2"><div className="relative flex-1"><Search className="absolute left-3 top-2.5 h-4 w-4 text-neutral-500"/><input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search country, IP, host" className="w-full border border-neutral-800 bg-black py-2 pl-9 pr-3 text-xs text-white"/></div><button disabled={gateRefreshing} onClick={()=>void loadGate(true)} className="flex min-w-28 items-center justify-center gap-2 border border-neutral-700 px-3 text-xs uppercase disabled:cursor-wait disabled:opacity-60">{gateRefreshing?<><RefreshCw className="h-3.5 w-3.5 animate-spin"/>Refreshing…</>:<><RefreshCw className="h-3.5 w-3.5"/>Refresh</>}</button></div><div className="border border-neutral-800 bg-neutral-950">{visibleGate.map(s=>{const isActive=active&&summary?.profileId===`vpngate:${s.id}`;return <div key={s.id} className="flex flex-wrap items-center justify-between gap-3 border-b border-neutral-900 p-3 text-xs"><div><strong className="text-white">{s.countryShort}</strong> <span className="text-neutral-400">{s.ip}</span><div className="text-[10px] text-neutral-500">{s.ping||'N/A'} ms · {(s.speed/1_000_000).toFixed(1)} Mbps</div></div><div className="flex gap-2"><button disabled={!canConnect||isActive} onClick={()=>void gateConnect(s)} className="flex items-center gap-1 border border-white bg-white px-2 py-1 font-bold uppercase text-black disabled:opacity-30"><Play className="h-3 w-3"/>{isActive?'Connected':'Connect'}</button><button disabled={operationBusy} onClick={()=>void gateSave(s)} className="flex items-center gap-1 border border-neutral-700 px-2 py-1 uppercase"><Save className="h-3 w-3"/>Save</button></div></div>})}</div></section>}
 
       {tab==='warp'&&<section className="grid gap-4 lg:grid-cols-2"><div className="border border-neutral-800 bg-neutral-950 p-5 text-xs">{[['Installed',warp?.installed?'YES':'NO'],['Service',warp?.daemonRunning?'RUNNING':'STOPPED'],['Registered',warp?.registered?'YES':'NO'],['Connected',warp?.connected?'YES':'NO'],['Mode',warp?.mode||'Unknown'],['Account',warp?.accountType||'Unknown']].map(([k,v])=><div key={k} className="flex justify-between border-b border-neutral-900 py-2"><span className="text-neutral-500">{k}</span><span className="text-white">{v}</span></div>)}</div><div className="border border-neutral-800 bg-neutral-950 p-5"><h2 className="mb-3 text-xs font-bold uppercase text-white">WARP Actions</h2><div className="grid grid-cols-2 gap-2 text-xs"><button disabled={operationBusy||active||!warp?.installed||Boolean(warp?.registered)} onClick={()=>void warpAction('register')} className="border border-neutral-700 p-2 uppercase disabled:cursor-not-allowed disabled:opacity-30">Register</button><button disabled={!canConnect||!warp?.installed||!warp?.registered||Boolean(warp?.connected)} onClick={()=>void warpAction('connect')} className="border border-white bg-white p-2 font-bold uppercase text-black disabled:cursor-not-allowed disabled:opacity-30">Connect</button><button disabled={operationBusy||!active||summary?.type!=='warp'} onClick={()=>void warpAction('disconnect')} className="border border-neutral-700 p-2 uppercase disabled:cursor-not-allowed disabled:opacity-30">Disconnect</button><button disabled={operationBusy||active||!warp?.installed||!warp?.registered} onClick={()=>void warpAction('reset')} className="border border-neutral-700 p-2 uppercase disabled:cursor-not-allowed disabled:opacity-30">Reset</button></div><div className="mt-3 whitespace-pre-wrap break-words border border-neutral-900 bg-black p-3 text-[10px] text-neutral-500">{warp?.details||'No WARP status loaded.'}</div></div></section>}
     </main></div>
