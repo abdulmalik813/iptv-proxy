@@ -49,7 +49,7 @@ export async function DELETE(req: NextRequest) {
   const key = new URL(req.url).searchParams.get('key')?.trim();
   const target = key ? `http://127.0.0.1:8080/internal/cache?key=${encodeURIComponent(key)}` : 'http://127.0.0.1:8080/internal/cache';
   try {
-    const response = await fetch(target, { method: 'DELETE', headers: headers(), signal: AbortSignal.timeout(30000) });
+    const response = await fetch(target, { method: 'DELETE', headers: headers(), signal: AbortSignal.timeout(10 * 60 * 1000) });
     return NextResponse.json(await readJson(response), { status: response.status });
   } catch (error) {
     return NextResponse.json({ success: false, error: error instanceof Error ? error.message : String(error) }, { status: 503 });
