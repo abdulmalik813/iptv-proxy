@@ -29,6 +29,15 @@ test('Go route resolver supports explicit provider routes before default provide
   assert.match(resolver, /MatchedBy: MatchDefault/);
 });
 
+test('Go routing only forwards recognized authenticated IPTV endpoint families', async () => {
+  const handler = await source('internal/proxy/handler.go');
+  for (const endpoint of ['player_api.php', 'get.php', 'xmltv.php', 'live', 'movie', 'series', 'timeshift', 'streaming']) {
+    assert.match(handler, new RegExp(`"${endpoint.replace('.', '\\.') }"`));
+  }
+  assert.match(handler, /unsupported IPTV endpoint/);
+  assert.match(handler, /invalid IPTV credentials/);
+});
+
 test('Go cache cold-loads provider data and refreshes automatically at 30 percent remaining', async () => {
   const cache = compact(await source('internal/cache/manager.go'));
   assert.match(cache, /refreshThreshold = 0\.30/);
@@ -60,35 +69,38 @@ test('cache runtime management keeps refresh separate from purge', async () => {
 });
 
 test('cached IPTV metadata validates replacements before storing them', async () => {
-  const handler = await source('internal/proxy/handler.go');
-  assert.match(handler, /get\.php/);
-  assert.match(handler, /xmltv\.php/);
-  assert.match(handler, /get_live_streams/);
-  assert.match(handler, /json\.Unmarshal/);
-  assert.match(handler, /#EXTM3U/);
-  assert.match(handler, /<tv/);
-  assert.match(handler, /old cache was preserved/);
+  const cacheProxy = await source('internal/proxy/cache_proxy.go');
+  assert.match(cacheProxy, /get\.php/);
+  assert.match(cacheProxy, /xmltv\.php/);
+  assert.match(cacheProxy, /json\.Unmarshal/);
+  assert.match(cacheProxy, /#EXTM3U/);
+  assert.match(cacheProxy, /<tv/);
+  assert.match(cacheProxy, /old cache was preserved/);
 });
 
 test('cached M3U playlists rewrite playable URLs through the public proxy', async () => {
-  const handler = compact(await source('internal/proxy/handler.go'));
+  const cacheProxy = compact(await source('internal/proxy/cache_proxy.go'));
   const m3u = await source('internal/proxy/m3u.go');
-  assert.match(handler, /endpoint\s*==\s*"get\.php"/);
-  assert.match(handler, /rewriteM3UPlaylist/);
+  assert.match(cacheProxy, /endpoint\s*==\s*"get\.php"/);
+  assert.match(cacheProxy, /rewriteM3UPlaylist/);
   assert.match(m3u, /p\.LocalUsername/);
   assert.match(m3u, /p\.LocalPassword/);
   assert.match(m3u, /p\.Route/);
   assert.match(m3u, /case "live", "movie", "series", "timeshift"/);
 });
 
-test('HLS playlists rewrite nested playlists segments keys and maps back through the proxy', async () => {
-  const handler = await source('internal/proxy/handler.go');
-  assert.match(handler, /isHLSResponse/);
-  assert.match(handler, /rewritePlaylist/);
-  assert.match(handler, /URI=/);
-  assert.match(handler, /ResolveReference/);
-  assert.match(handler, /\/_hls\//);
-  assert.match(handler, /hls:/);
+test('HLS playlists proxy nested playlists segments keys maps audio and subtitles without leaking failed rewrites', async () => {
+  const hls = await source('internal/proxy/hls.go');
+  assert.match(hls, /isHLSResponse/);
+  assert.match(hls, /rewritePlaylist/);
+  assert.match(hls, /URI=/);
+  assert.match(hls, /ResolveReference/);
+  assert.match(hls, /\/_hls\//);
+  assert.match(hls, /hls:/);
+  assert.match(hls, /ProviderID/);
+  assert.match(hls, /target\.ProviderID != resolved\.Provider\.ID/);
+  assert.match(hls, /unsupported HLS child URL scheme/);
+  assert.doesNotMatch(hls, /return match/);
 });
 
 test('provider catch-up supports path and streaming timeshift forms', async () => {
@@ -111,10 +123,11 @@ test('VOD and series proxying preserve HTTP range semantics', async () => {
 
 test('continuous live streams use one upstream session with per-viewer queues', async () => {
   const handler = await source('internal/proxy/handler.go');
+  const liveProxy = await source('internal/proxy/live_proxy.go');
   const manager = await source('internal/stream/manager.go');
   assert.match(handler, /shouldMultiplexLive/);
-  assert.match(handler, /serveLiveMultiplexed/);
-  assert.match(handler, /X-IPTV-Multiplexed/);
+  assert.match(liveProxy, /serveLiveMultiplexed/);
+  assert.match(liveProxy, /X-IPTV-Multiplexed/);
   assert.match(manager, /sessions map\[string\]\*Session/);
   assert.match(manager, /viewerQueueSize = 32/);
   assert.match(manager, /len\(s\.viewers\) == 1/);
