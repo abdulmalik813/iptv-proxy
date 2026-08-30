@@ -117,7 +117,8 @@ test('empty Redis cache can be explicitly prewarmed from the admin UI', async ()
   const route = await source('app/api/system/cache/route.ts');
   const page = await source('app/cache/page.tsx');
   assert.match(warm, /WarmAllCache/);
-  for (const action of ['get_live_categories', 'get_live_streams', 'get_vod_categories', 'get_vod_streams', 'get_series_categories', 'get_series']) assert.match(warm, new RegExp(action));
+  for (const action of ['get_live_streams', 'get_vod_streams', 'get_series']) assert.match(warm, new RegExp(action));
+  for (const action of ['get_live_categories', 'get_vod_categories', 'get_series_categories']) assert.doesNotMatch(warm, new RegExp(action));
   assert.match(warm, /xmltv\.php/);
   assert.match(warm, /get\.php/);
   assert.match(cache, /func \(m \*Manager\) Warm/);
