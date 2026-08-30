@@ -18,16 +18,13 @@ import (
 
 const maxHLSPlaylistBytes = 8 << 20
 
-// Only shared, catalog-sized Xtream responses belong in Redis. Per-item detail,
-// short EPG and category-filtered calls are intentionally proxied directly so
-// ordinary browsing cannot create hundreds of persistent cache entries.
+// Only the heavy shared Xtream catalog responses belong in Redis. Category
+// lists, per-item detail, short EPG and filtered calls are intentionally proxied
+// directly so ordinary browsing cannot create hundreds of persistent entries.
 var cacheablePlayerActions = map[string]bool{
-	"get_live_categories":   true,
-	"get_live_streams":      true,
-	"get_vod_categories":    true,
-	"get_vod_streams":       true,
-	"get_series_categories": true,
-	"get_series":            true,
+	"get_live_streams": true,
+	"get_vod_streams":  true,
+	"get_series":       true,
 }
 
 var supportedEndpoints = map[string]bool{
