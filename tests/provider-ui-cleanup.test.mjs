@@ -13,10 +13,24 @@ test('providers page no longer includes the route resolution simulator', async (
   assert.doesNotMatch(page, /testPath/);
 });
 
-test('provider test UI displays raw HTML or text instead of throwing JSON parse errors', async () => {
+test('provider test UI parses JSON safely and shows non-JSON diagnostics as text', async () => {
   const page = await source('app/providers/tests/page.tsx');
   assert.match(page, /await response\.text\(\)/);
   assert.match(page, /JSON\.parse\(raw\)/);
-  assert.match(page, /Raw Response/);
+  assert.match(page, /Raw Response Body/);
+  assert.match(page, /Response Headers/);
+  assert.match(page, /Final URL/);
   assert.doesNotMatch(page, /await response\.json\(\)/);
+  assert.doesNotMatch(page, /dangerouslySetInnerHTML/);
+  assert.doesNotMatch(page, /<iframe/);
+});
+
+test('provider account test returns useful upstream diagnostics without exposing credentials', async () => {
+  const route = await source('app/api/providers/[id]/test/route.ts');
+  assert.match(route, /upstreamStatusText/);
+  assert.match(route, /responseHeaders/);
+  assert.match(route, /finalUrl/);
+  assert.match(route, /redactUrl/);
+  assert.match(route, /searchParams\.set\('password', '\[redacted\]'\)/);
+  assert.doesNotMatch(route, /set-cookie/i);
 });
