@@ -3,10 +3,7 @@
 FROM node:22-bookworm-slim AS base
 WORKDIR /app
 ENV NEXT_TELEMETRY_DISABLED=1
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    golang-go \
-  && rm -rf /var/lib/apt/lists/* \
-  && npm install --global pnpm@11.24.0
+RUN npm install --global pnpm@11.24.0
 
 FROM base AS deps
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -18,16 +15,22 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY package.json pnpm-workspace.yaml ./
 RUN pnpm install --no-frozen-lockfile
 
-FROM base AS builder
+FROM base AS web-builder
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
-RUN mkdir -p public /app/bin
+RUN mkdir -p public
 ARG UI_URL=http://localhost:3000/ui
 ENV UI_URL=${UI_URL}
 ENV NODE_ENV=production
 RUN pnpm build
-RUN go build -o /app/bin/iptv-go-proxy ./cmd/proxy
+
+FROM golang:1.27-bookworm AS go-builder
+WORKDIR /src
+COPY go.mod ./
+COPY cmd ./cmd
+COPY internal ./internal
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/iptv-go-proxy ./cmd/proxy
 
 FROM node:22-bookworm-slim AS runner
 WORKDIR /app
@@ -46,7 +49,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     gnupg \
     dumb-init \
-    golang-go \
     wireguard-tools \
     openvpn \
     iptables \
@@ -73,17 +75,17 @@ RUN mkdir -p \
     /etc/wireguard \
     /etc/openvpn
 
-COPY --from=builder /app/.next/standalone ./
-COPY --from=builder /app/.next/static ./.next/static
-COPY --from=builder /app/public ./public
-COPY --from=builder /app/bin/iptv-go-proxy /usr/local/bin/iptv-go-proxy
+COPY --from=web-builder /app/.next/standalone ./
+COPY --from=web-builder /app/.next/static ./.next/static
+COPY --from=web-builder /app/public ./public
+COPY --from=go-builder /out/iptv-go-proxy /usr/local/bin/iptv-go-proxy
 COPY docker/entrypoint.sh /usr/local/bin/iptv-proxy-entrypoint
 RUN chmod +x /usr/local/bin/iptv-proxy-entrypoint /usr/local/bin/iptv-go-proxy
 
 EXPOSE 3000 8080
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
-  CMD curl -fsS http://127.0.0.1:3000/ui/api/health >/dev/null || exit 1
+  CMD-SHELL curl -fsS http://127.0.0.1:3000/ui/api/health >/dev/null && curl -fsS http://127.0.0.1:8080/health >/dev/null
 
 ENTRYPOINT ["/usr/bin/dumb-init", "--"]
 CMD ["/usr/local/bin/iptv-proxy-entrypoint"]
