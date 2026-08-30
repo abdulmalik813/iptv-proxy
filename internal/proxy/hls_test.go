@@ -4,11 +4,13 @@ import (
 	"context"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
 
 	"github.com/abdulmalik813/iptv-proxy/internal/provider"
+	"github.com/abdulmalik813/iptv-proxy/internal/stream"
 )
 
 func TestPrepareHLSResponseSniffsMislabeledPlaylistAndPreservesBody(t *testing.T) {
@@ -73,5 +75,64 @@ func TestRewritePlaylistAcceptsBOMIndentedTagsAndInlineDataURI(t *testing.T) {
 	}
 	if !strings.Contains(text, `URI="data:text/plain;base64,QUJD"`) {
 		t.Fatalf("inline data URI was unexpectedly rewritten: %q", text)
+	}
+}
+
+func TestServeDirectSwitchesMislabeledTimeshiftTSToHLS(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "video/mp2t")
+		_, _ = io.WriteString(w, "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-ENDLIST\n")
+	}))
+	defer upstream.Close()
+
+	target, _ := url.Parse(upstream.URL + "/timeshift/up/pass/60/2026-08-30:01-00/123.ts")
+	h := &Handler{streamClient: upstream.Client()}
+	r := httptest.NewRequest(http.MethodGet, "http://proxy/timeshift/local/secret/60/2026-08-30:01-00/123.ts", nil)
+	w := httptest.NewRecorder()
+
+	h.serveDirect(w, r, provider.Provider{}, target)
+
+	resp := w.Result()
+	defer resp.Body.Close()
+	if got := resp.Header.Get("Content-Type"); got != "application/vnd.apple.mpegurl" {
+		t.Fatalf("Content-Type=%q", got)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(string(body), "#EXTM3U\n") {
+		t.Fatalf("body=%q", body)
+	}
+}
+
+func TestServeLiveMultiplexedSwitchesMislabeledTSToHLS(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "video/mp2t")
+		_, _ = io.WriteString(w, "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-ENDLIST\n")
+	}))
+	defer upstream.Close()
+
+	target, _ := url.Parse(upstream.URL + "/live/up/pass/123.ts")
+	h := &Handler{streamClient: upstream.Client(), live: stream.NewManager()}
+	r := httptest.NewRequest(http.MethodGet, "http://proxy/live/local/secret/123.ts", nil)
+	w := httptest.NewRecorder()
+
+	h.serveLiveMultiplexed(w, r, provider.Provider{ID: "provider-1", Name: "Test"}, target)
+
+	resp := w.Result()
+	defer resp.Body.Close()
+	if got := resp.Header.Get("Content-Type"); got != "application/vnd.apple.mpegurl" {
+		t.Fatalf("Content-Type=%q", got)
+	}
+	if got := resp.Header.Get("X-IPTV-Multiplexed"); got != "" {
+		t.Fatalf("HLS response incorrectly exposed TS multiplex header %q", got)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(string(body), "#EXTM3U\n") {
+		t.Fatalf("body=%q", body)
 	}
 }
