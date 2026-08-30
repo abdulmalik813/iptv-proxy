@@ -10,7 +10,6 @@ import (
 	"strings"
 	"time"
 
-	proxyl logging "github.com/abdulmalik813/iptv-proxy/internal/logging"
 	"github.com/abdulmalik813/iptv-proxy/internal/provider"
 )
 
@@ -103,10 +102,10 @@ func safeRequestMeta(r *http.Request) map[string]any {
 
 func providerMeta(p provider.Provider, endpoint string, target *url.URL) map[string]any {
 	meta := map[string]any{
-		"providerId":   p.ID,
-		"providerName": p.Name,
+		"providerId":    p.ID,
+		"providerName":  p.Name,
 		"providerRoute": p.Route,
-		"endpoint":     endpoint,
+		"endpoint":      endpoint,
 	}
 	if target != nil {
 		if action := target.Query().Get("action"); action != "" {
@@ -125,5 +124,3 @@ func clientIP(r *http.Request) string {
 	}
 	return r.RemoteAddr
 }
-
-var _ = proxyl logging.Client{}
