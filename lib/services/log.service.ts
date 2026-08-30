@@ -193,9 +193,9 @@ export class LogService {
       args.push(params.category);
     }
     if (params.search?.trim()) {
-      conditions.push('(message LIKE ? OR category LIKE ? OR source LIKE ?)');
+      conditions.push('(message LIKE ? OR category LIKE ? OR source LIKE ? OR metadata_json LIKE ?)');
       const term = `%${params.search.trim().slice(0, 200)}%`;
-      args.push(term, term, term);
+      args.push(term, term, term, term);
     }
 
     const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
