@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect } from 'react';
+import { useLayoutEffect } from 'react';
 
 const UI_BASE = process.env.NEXT_PUBLIC_UI_BASE_PATH || '/ui';
 
@@ -10,7 +10,7 @@ function withUiBase(input: string): string {
 }
 
 export function UiRouteBridge() {
-  useEffect(() => {
+  useLayoutEffect(() => {
     const originalFetch = window.fetch.bind(window);
     const NativeEventSource = window.EventSource;
 
