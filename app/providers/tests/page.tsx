@@ -190,16 +190,16 @@ export default function ProviderTestsPage() {
 
             return (
               <Card key={provider.id}>
-                <CardHeader className="flex-row items-start justify-between gap-4">
+                <CardHeader className="gap-4 sm:flex-row sm:items-start sm:justify-between">
                   <div className="min-w-0">
                     <div className="flex flex-wrap items-center gap-2">
                       <CardTitle>{provider.name}</CardTitle>
                       <Badge variant="outline" className="font-mono">/{provider.route}</Badge>
                       {provider.enabled !== 1 && <Badge variant="secondary">Disabled</Badge>}
                     </div>
-                    <CardDescription className="mt-1 truncate">{provider.host} · {provider.upstream_username}</CardDescription>
+                    <CardDescription className="mt-1 break-all sm:truncate">{provider.host} · {provider.upstream_username}</CardDescription>
                   </div>
-                  <Button variant="outline" size="sm" onClick={() => void testProvider(provider)} disabled={state.loading}>
+                  <Button className="w-full sm:w-auto" variant="outline" size="sm" onClick={() => void testProvider(provider)} disabled={state.loading}>
                     {state.loading ? <RefreshCw className="animate-spin" /> : <FlaskConical />}
                     {state.loading ? 'Testing…' : 'Test account'}
                   </Button>
