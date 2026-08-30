@@ -109,7 +109,6 @@ export async function runMigrations(db: Client): Promise<void> {
       await db.execute('ALTER TABLE app_settings ADD COLUMN active_vpn_label TEXT;');
     }
 
-    // Repair any pre-existing duplicate default flags before enforcing uniqueness.
     await db.execute(`
       UPDATE iptv_providers
       SET is_default = 0
@@ -142,6 +141,56 @@ export async function runMigrations(db: Client): Promise<void> {
     await recordMigration(db, 2, 'vpn_label_and_integrity_indexes');
   }
 
+  if (!(await migrationApplied(db, 3))) {
+    if (!(await columnExists(db, 'users', 'session_version'))) {
+      await db.execute('ALTER TABLE users ADD COLUMN session_version INTEGER NOT NULL DEFAULT 1;');
+    }
+
+    await db.batch([
+      `CREATE TABLE IF NOT EXISTS provider_users (
+        id TEXT PRIMARY KEY,
+        provider_id TEXT NOT NULL,
+        username TEXT NOT NULL,
+        password TEXT NOT NULL,
+        enabled INTEGER NOT NULL DEFAULT 1,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY (provider_id) REFERENCES iptv_providers(id) ON DELETE CASCADE,
+        UNIQUE (provider_id, username)
+      );`,
+      'CREATE INDEX IF NOT EXISTS idx_provider_users_provider ON provider_users(provider_id, enabled, created_at);',
+    ]);
+
+    const providerRows = await db.execute(
+      'SELECT id, local_username, local_password, created_at, updated_at FROM iptv_providers',
+    );
+    for (const row of providerRows.rows) {
+      const providerId = String(row.id);
+      const username = String(row.local_username || '').trim();
+      const password = String(row.local_password || '');
+      if (!username || !password) continue;
+      const existing = await db.execute({
+        sql: 'SELECT id FROM provider_users WHERE provider_id = ? AND username = ? LIMIT 1',
+        args: [providerId, username],
+      });
+      if (existing.rows.length) continue;
+      await db.execute({
+        sql: `INSERT INTO provider_users (id, provider_id, username, password, enabled, created_at, updated_at)
+              VALUES (?, ?, ?, ?, 1, ?, ?)`,
+        args: [
+          crypto.randomUUID(),
+          providerId,
+          username,
+          password,
+          String(row.created_at || new Date().toISOString()),
+          String(row.updated_at || new Date().toISOString()),
+        ],
+      });
+    }
+
+    await recordMigration(db, 3, 'provider_users_and_session_version');
+  }
+
   const now = new Date().toISOString();
   const settingsCheck = await db.execute("SELECT id FROM app_settings WHERE id = 'global'");
   if (settingsCheck.rows.length === 0) {
@@ -172,7 +221,7 @@ export async function runMigrations(db: Client): Promise<void> {
       const passwordHash = await bcrypt.hash(configuredPassword, 12);
       const userId = crypto.randomUUID();
       await db.execute({
-        sql: 'INSERT INTO users (id, username, password_hash, created_at, updated_at) VALUES (?, ?, ?, ?, ?)',
+        sql: 'INSERT INTO users (id, username, password_hash, session_version, created_at, updated_at) VALUES (?, ?, ?, 1, ?, ?)',
         args: [userId, configuredUsername, passwordHash, now, now],
       });
       await db.execute({
