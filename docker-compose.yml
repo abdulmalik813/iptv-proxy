@@ -51,6 +51,7 @@ services:
     network_mode: "service:iptv-proxy-admin"
     command: ["/usr/local/bin/iptv-go-proxy"]
     environment:
+      APP_URL: ${APP_URL:-http://localhost:8080}
       GO_PROXY_ADDR: :8080
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/health"]
