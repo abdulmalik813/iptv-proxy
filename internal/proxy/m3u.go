@@ -24,7 +24,7 @@ func (h *Handler) rewriteM3UPlaylist(p provider.Provider, clientUser provider.Us
 }
 
 func (h *Handler) rewriteM3UTarget(p provider.Provider, clientUser provider.User, raw string) (string, bool) {
-	if clientUser.Username == "" || clientUser.Password == "" {
+	if clientUser.Username == "" || clientUser.ClientPassword == "" {
 		return "", false
 	}
 	urlPart, pipeOptions := splitM3UPipeOptions(raw)
@@ -52,7 +52,7 @@ func (h *Handler) rewriteM3UTarget(p provider.Provider, clientUser provider.User
 			return "", false
 		}
 		segments[1] = clientUser.Username
-		segments[2] = clientUser.Password
+		segments[2] = clientUser.ClientPassword
 		streamPath = "/" + strings.Join(segments, "/")
 	case "streaming":
 		q := target.Query()
@@ -60,7 +60,7 @@ func (h *Handler) rewriteM3UTarget(p provider.Provider, clientUser provider.User
 			return "", false
 		}
 		q.Set("username", clientUser.Username)
-		q.Set("password", clientUser.Password)
+		q.Set("password", clientUser.ClientPassword)
 		target.RawQuery = q.Encode()
 	default:
 		return "", false
