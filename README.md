@@ -1,101 +1,154 @@
 # IPTV Proxy
 
-Self-hosted IPTV proxy and management application built with Next.js 16, TypeScript, Go, SQLite, and Docker.
+Self-hosted IPTV proxy appliance with a Next.js administration UI, Go proxy core, SQLite persistence, and container-managed VPN routing.
 
-The project runs the Next.js administration UI on port `3000` and the Go IPTV proxy core on port `8080` inside the same container. Because both processes share the same container network namespace, WireGuard, OpenVPN/VPNGate, and Cloudflare WARP routing applies to Go proxy egress as well as the administration service.
+## Architecture
 
-## Main components
+One container runs both application processes so they always share the same network namespace and active VPN:
 
-- Next.js administration UI under the path defined by `UI_URL`.
-- Go IPTV proxy core on port `8080`.
-- SQLite persistence in `/data/iptv-proxy.db` using WAL mode.
-- IPTV provider CRUD, default-provider routing, local credentials, routes, and cache settings.
-- WireGuard, OpenVPN, VPNGate, and Cloudflare WARP management.
-- One active VPN tunnel at a time with persisted state and reconciliation.
-- Live application/VPN logs.
-- Container egress IP/location display and on-demand upload/download speed testing.
+- Next.js admin UI on port `3000`
+- Go proxy core on port `8080`
+- WireGuard, OpenVPN/VPNGate, and Cloudflare WARP
+- SQLite database at `/data/iptv-proxy.db`
 
-## Required production environment
+`UI_URL` controls the Next.js base path. `APP_URL` is the public root URL for the Go proxy.
 
-```env
-SESSION_SECRET=<secure-secret>
+Example production URLs:
+
+```text
 UI_URL=https://iptv.example.com/ui
 APP_URL=https://iptv.example.com
 ```
 
-`UI_URL` is the public Next.js administration URL. Its pathname is used as the Next.js `basePath` at build time.
+Route `/ui/*` to port `3000` and IPTV/root traffic to port `8080`.
 
-`APP_URL` is the public URL for the Go IPTV proxy core.
+## Current Features
 
-Additional settings are documented in `.env.example`.
+- First-run administrator setup and session authentication
+- IPTV provider CRUD and provider route validation
+- WireGuard profile CRUD and connection management
+- OpenVPN profile CRUD and connection management
+- VPNGate relay discovery, search, pagination, save, connect, and retry
+- Cloudflare WARP registration, connect, disconnect, and rotate
+- One-active-VPN enforcement and stale-state reconciliation
+- Current outgoing IP, server, and location reporting
+- Container egress upload/download speed test
+- Go core runtime health indicator in the admin UI
+- SQLite WAL mode
+- Persistent application logs with filtering and live SSE updates
+- Authenticated CRUD API for logs, including internal Go-core access
 
-## Docker
+## Required Production Environment
 
-The production image is:
-
-```text
-ghcr.io/abdulmalik813/iptv-proxy:latest
+```env
+SESSION_SECRET=<secure random value>
+INTERNAL_API_TOKEN=<secure random value>
+UI_URL=https://iptv.example.com/ui
+APP_URL=https://iptv.example.com
 ```
 
-The Dokploy Compose file is `docker-compose.dokploy.yml`. The service is named `iptv-proxy` and attaches to `dokploy-network`.
-
-For local Docker Compose:
+Generate secrets with:
 
 ```bash
-docker compose up -d --build
+openssl rand -hex 32
 ```
 
-The combined container listens on:
+`INTERNAL_API_TOKEN` is server-side only. The Go core can authenticate to management APIs with:
 
 ```text
-3000  Next.js admin UI
-8080  Go IPTV proxy
+Authorization: Bearer <INTERNAL_API_TOKEN>
 ```
 
-## Development Container
+Do not expose this token to browsers or IPTV clients.
 
-The repository includes `.devcontainer/devcontainer.json` and `.devcontainer/Dockerfile` with Node 22, pnpm, Go, WireGuard, OpenVPN, Cloudflare WARP, SQLite, and networking tools.
+## Dokploy
 
-The workspace path is:
+Use `docker-compose.dokploy.yml`. Dokploy manages its own service network, so that Compose file intentionally does not declare a Docker network.
 
-```text
-/workspaces/iptv-proxy
-```
+The container requires:
 
-Run Next.js with:
+- `NET_ADMIN`
+- `/dev/net/tun`
+- IPv4 forwarding
+- `net.ipv4.conf.all.src_valid_mark=1`
+
+The healthcheck verifies both Next.js and the Go core.
+
+## Development
+
+The Dev Container includes Node 22, pnpm, Go, WireGuard, OpenVPN, Cloudflare WARP, SQLite, and networking tools.
+
+After rebuilding/opening the Dev Container:
 
 ```bash
+pnpm install
 pnpm dev
 ```
 
-Run the Go core during development with:
+Run the Go core separately during development when needed:
 
 ```bash
 go run ./cmd/proxy
 ```
 
-## SQLite
-
-Default production database path:
+Ports:
 
 ```text
-/data/iptv-proxy.db
+3000  Next.js admin
+8080  Go proxy core
 ```
 
-The database uses WAL mode and contains users, IPTV providers, VPN settings/profiles, logs, and migrations.
+## Logs API
 
-## VPN security
-
-Uploaded WireGuard profiles reject executable `PreUp`, `PostUp`, `PreDown`, and `PostDown` hooks. OpenVPN profiles reject executable hooks/plugins and only support TUN mode.
-
-The VPN manager verifies runtime tunnel state and external connectivity before marking a tunnel connected. Only one VPN may be active at a time.
-
-## Package managers
-
-JavaScript dependencies use pnpm. Go dependencies use Go modules.
-
-Repository and Go module:
+Collection endpoint:
 
 ```text
-github.com/abdulmalik813/iptv-proxy
+/ui/api/logs
 ```
+
+Supported methods:
+
+```text
+GET     query logs
+POST    create a log
+DELETE  clear logs
+```
+
+Item endpoint:
+
+```text
+/ui/api/logs/{id}
+```
+
+Supported methods:
+
+```text
+GET     read a log
+PUT     update a log
+DELETE  delete a log
+```
+
+Browser administration uses the authenticated session. Internal services use `INTERNAL_API_TOKEN`.
+
+## Security
+
+Uploaded WireGuard profiles reject executable hook directives. OpenVPN profiles reject executable/plugin authentication hooks and only support TUN mode. Sensitive log fields are redacted before persistence. Provider passwords are masked in public management responses.
+
+## Checks
+
+The independent Test workflow verifies:
+
+- regression contracts
+- Go formatting, vet, tests, and build
+- ESLint
+- TypeScript
+- production Next.js build
+- local and Dokploy Compose validity
+
+The Build and Deploy workflow independently builds the production image, pushes it to:
+
+```text
+ghcr.io/abdulmalik813/iptv-proxy:latest
+```
+
+and invokes the configured Dokploy deployment webhook.
