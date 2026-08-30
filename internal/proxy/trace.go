@@ -108,6 +108,73 @@ func safeRequestMeta(r *http.Request) map[string]any {
 	return meta
 }
 
+func requestFullURL(appURL string, r *http.Request) string {
+	base, err := url.Parse(strings.TrimSuffix(appURL, "/"))
+	if err == nil && base.Scheme != "" && base.Host != "" {
+		base.Path = strings.TrimSuffix(base.Path, "/") + r.URL.Path
+		base.RawPath = ""
+		base.RawQuery = r.URL.RawQuery
+		return safeURLString(base.String())
+	}
+
+	scheme := strings.TrimSpace(strings.Split(r.Header.Get("X-Forwarded-Proto"), ",")[0])
+	if scheme == "" {
+		scheme = "http"
+	}
+	host := strings.TrimSpace(strings.Split(r.Header.Get("X-Forwarded-Host"), ",")[0])
+	if host == "" {
+		host = r.Host
+	}
+	fallback := &url.URL{Scheme: scheme, Host: host, Path: r.URL.Path, RawQuery: r.URL.RawQuery}
+	return safeURLString(fallback.String())
+}
+
+func safeURLString(raw string) string {
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return "[invalid URL]"
+	}
+	parsed.User = nil
+	parsed.Path = redactCredentialPath(parsed.Path)
+	parsed.RawPath = ""
+	query := parsed.Query()
+	for key := range query {
+		if sensitiveURLParameter(key) {
+			query.Set(key, "REDACTED")
+		}
+	}
+	parsed.RawQuery = query.Encode()
+	return parsed.String()
+}
+
+func sensitiveURLParameter(key string) bool {
+	lower := strings.ToLower(strings.TrimSpace(key))
+	if lower == "username" || lower == "user" || lower == "password" || lower == "pass" || lower == "authorization" || lower == "auth" || lower == "apikey" || lower == "api_key" {
+		return true
+	}
+	return strings.Contains(lower, "password") || strings.Contains(lower, "token") || strings.Contains(lower, "secret")
+}
+
+func redactCredentialPath(rawPath string) string {
+	segments := strings.Split(rawPath, "/")
+	for i, segment := range segments {
+		switch strings.ToLower(segment) {
+		case "live", "movie", "series", "timeshift":
+			if i+1 < len(segments) {
+				segments[i+1] = "REDACTED"
+			}
+			if i+2 < len(segments) {
+				segments[i+2] = "REDACTED"
+			}
+		case "_hls":
+			if i+1 < len(segments) {
+				segments[i+1] = "REDACTED"
+			}
+		}
+	}
+	return strings.Join(segments, "/")
+}
+
 func providerMeta(p provider.Provider, endpoint string, target *url.URL) map[string]any {
 	meta := map[string]any{
 		"providerId":    p.ID,
@@ -116,6 +183,7 @@ func providerMeta(p provider.Provider, endpoint string, target *url.URL) map[str
 		"endpoint":      endpoint,
 	}
 	if target != nil {
+		meta["outgoingUrl"] = safeURLString(target.String())
 		if action := target.Query().Get("action"); action != "" {
 			meta["action"] = action
 		}
