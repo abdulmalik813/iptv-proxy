@@ -84,7 +84,20 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	r = r.WithContext(ctx)
 	recorder := &responseRecorder{ResponseWriter: w}
 	recorder.Header().Set("X-IPTV-Trace-ID", trace.ID)
-	h.trace(ctx, "info", "request.received", "IPTV client request received", safeRequestMeta(r))
+
+	incomingURL := requestFullURL(h.appURL, r)
+	incomingMeta := safeRequestMeta(r)
+	incomingMeta["direction"] = "incoming"
+	incomingMeta["url"] = incomingURL
+	incomingMeta["incomingUrl"] = incomingURL
+	h.trace(ctx, "info", "request.received", "Incoming IPTV client request", incomingMeta)
+
+	completionMeta := map[string]any{
+		"direction":   "outgoing",
+		"method":      r.Method,
+		"url":         incomingURL,
+		"incomingUrl": incomingURL,
+	}
 	defer func() {
 		status := recorder.status
 		if status == 0 {
@@ -96,24 +109,30 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		} else if status >= 400 {
 			level = "warning"
 		}
-		h.trace(ctx, level, "request.completed", "IPTV client request completed", map[string]any{
-			"status":    status,
-			"bytesOut":  recorder.bytes,
-			"elapsedMs": time.Since(trace.Started).Milliseconds(),
-		})
+		completionMeta["status"] = status
+		completionMeta["bytesOut"] = recorder.bytes
+		completionMeta["elapsedMs"] = time.Since(trace.Started).Milliseconds()
+		if contentType := recorder.Header().Get("Content-Type"); contentType != "" {
+			completionMeta["contentType"] = contentType
+		}
+		h.trace(ctx, level, "request.completed", "Outgoing IPTV response to client", completionMeta)
 	}()
 
 	resolved, err := h.resolver.Resolve(ctx, r.URL.Path)
 	if err != nil {
-		h.trace(ctx, "error", "route.resolve", "Provider route resolution failed", map[string]any{"error": err.Error()})
+		h.trace(ctx, "error", "route.resolve", "Provider route resolution failed", map[string]any{"error": err.Error(), "url": incomingURL})
 		http.Error(recorder, err.Error(), http.StatusServiceUnavailable)
 		return
 	}
+	completionMeta["providerId"] = resolved.Provider.ID
+	completionMeta["providerName"] = resolved.Provider.Name
+	completionMeta["providerRoute"] = resolved.Provider.Route
 	h.trace(ctx, "debug", "route.resolve", "Provider route resolved", map[string]any{
 		"providerId":    resolved.Provider.ID,
 		"providerName":  resolved.Provider.Name,
 		"providerRoute": resolved.Provider.Route,
 		"matchedBy":     string(resolved.MatchedBy),
+		"incomingUrl":   incomingURL,
 	})
 
 	if strings.HasPrefix(resolved.RemainingPath, "/_hls/") {
@@ -128,12 +147,17 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			"providerId":   resolved.Provider.ID,
 			"providerName": resolved.Provider.Name,
 			"endpoint":     endpoint,
+			"incomingUrl":  incomingURL,
 			"error":        err.Error(),
 		})
 		http.Error(recorder, err.Error(), http.StatusUnauthorized)
 		return
 	}
+	completionMeta["endpoint"] = endpoint
+	completionMeta["clientUsername"] = clientUser.Username
+	completionMeta["clientUserId"] = clientUser.ID
 	meta := providerMeta(resolved.Provider, endpoint, upstreamURL)
+	meta["incomingUrl"] = incomingURL
 	meta["clientUsername"] = clientUser.Username
 	meta["clientUserId"] = clientUser.ID
 	h.trace(ctx, "debug", "request.rewrite", "Request authenticated and rewritten for upstream provider", meta)
