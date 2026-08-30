@@ -15,6 +15,6 @@ export async function readJson<T = Record<string, unknown>>(response: Response):
     return {
       success: false,
       error: `HTTP ${response.status}${response.statusText ? ` ${response.statusText}` : ''}`,
-    } as T;
+    } as unknown as T;
   }
 }
