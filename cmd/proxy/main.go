@@ -28,13 +28,13 @@ func main() {
 	uiURL := envOr("UI_URL", "http://localhost:3000/ui")
 	appURL := envOr("APP_URL", "http://localhost:8080")
 	redisAddr := envOr("REDIS_ADDR", "redis:6379")
-	redisPassword := os.Getenv("REDIS_PASSWORD")
-	internalToken := os.Getenv("INTERNAL_API_TOKEN")
+	internalToken := strings.TrimSpace(os.Getenv("INTERNAL_API_TOKEN"))
 	if internalToken == "" {
 		log.Fatal("INTERNAL_API_TOKEN is required by the Go core")
 	}
+	redisPassword := strings.TrimSpace(os.Getenv("REDIS_PASSWORD"))
 	if redisPassword == "" {
-		log.Fatal("REDIS_PASSWORD is required by the Go core")
+		redisPassword = internalToken
 	}
 
 	rootCtx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
