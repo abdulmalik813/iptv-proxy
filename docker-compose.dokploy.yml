@@ -11,7 +11,7 @@ services:
       NODE_ENV: production
       DATABASE_PATH: /data/iptv-proxy.db
       SESSION_SECRET: ${SESSION_SECRET:?SESSION_SECRET is required}
-      UI_URL: ${UI_URL:-https://iptv.yourwebpage.ca/ui}
+      UI_URL: ${UI_URL:?UI_URL is required}
       COOKIE_SECURE: ${COOKIE_SECURE:-true}
       INITIAL_ADMIN_USERNAME: ${INITIAL_ADMIN_USERNAME:-admin}
       INITIAL_ADMIN_PASSWORD: ${INITIAL_ADMIN_PASSWORD:-}
@@ -44,7 +44,7 @@ services:
     network_mode: "service:iptv-proxy-admin"
     command: ["/usr/local/bin/iptv-go-proxy"]
     environment:
-      APP_URL: ${APP_URL:-https://iptv.yourwebpage.ca}
+      APP_URL: ${APP_URL:?APP_URL is required}
       GO_PROXY_ADDR: :8080
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/health"]
