@@ -201,7 +201,7 @@ test('provider responses mask credentials and reserve proxy routes', async () =>
   }
 });
 
-test('provider account diagnostics handle JSON, HTML, and plain text responses', async () => {
+test('provider account diagnostics parse valid JSON and reduce non-JSON responses to HTTP status', async () => {
   const route = await source('app/api/providers/[id]/test/route.ts');
   const page = await source('app/providers/tests/page.tsx');
   const sidebar = await source('components/layout/sidebar.tsx');
@@ -210,18 +210,24 @@ test('provider account diagnostics handle JSON, HTML, and plain text responses',
   assert.match(route, /upstream_username/);
   assert.match(route, /upstream_password/);
   assert.match(route, /AbortSignal\.timeout\(15_000\)/);
-  assert.match(route, /rawResponse/);
-  assert.match(route, /rawContentType/);
+  assert.match(route, /upstreamStatus/);
+  assert.match(route, /upstreamStatusText/);
   assert.match(route, /userInfo\.auth === 1/);
   assert.match(route, /safeAccountInfo/);
   assert.match(route, /safeServerInfo/);
   assert.doesNotMatch(route, /password:\s*provider\.upstream_password/);
+
   assert.match(page, /Test All/);
   assert.match(page, /Test Account/);
   assert.match(page, /Connected & Authenticated/);
-  assert.match(page, /srcDoc=/);
-  assert.match(page, /sandbox=""/);
-  assert.match(page, /Rendered HTML Response/);
+  assert.match(page, /Any non-JSON upstream response shows only its HTTP status/);
+  assert.match(page, /state\.data\?\.upstreamStatus/);
+  assert.doesNotMatch(page, /srcDoc=/);
+  assert.doesNotMatch(page, /sandbox=""/);
+  assert.doesNotMatch(page, /Rendered HTML Response/);
+  assert.doesNotMatch(page, /Raw Response Body/);
+  assert.doesNotMatch(page, /dangerouslySetInnerHTML/);
+
   assert.match(sidebar, /Provider Tests/);
   assert.match(sidebar, /\/providers\/tests/);
 });
