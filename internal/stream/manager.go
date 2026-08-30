@@ -83,6 +83,7 @@ func (m *Manager) Subscribe(ctx context.Context, key string, open OpenFunc) (*Se
 
 		select {
 		case <-ctx.Done():
+			session.cancelIfEmpty()
 			return nil, nil, ctx.Err()
 		case <-session.ready:
 		}
@@ -196,6 +197,22 @@ func (s *Session) addViewer() *Viewer {
 }
 
 func (s *Session) broadcast(chunk []byte) {
+	s.mu.RLock()
+	if len(s.viewers) == 1 {
+		var only *Viewer
+		for _, viewer := range s.viewers {
+			only = viewer
+		}
+		s.mu.RUnlock()
+		select {
+		case <-s.ctx.Done():
+		case <-only.closed:
+		case only.queue <- chunk:
+		}
+		return
+	}
+	s.mu.RUnlock()
+
 	s.mu.Lock()
 	for id, viewer := range s.viewers {
 		select {
@@ -223,6 +240,15 @@ func (s *Session) Remove(viewer *Viewer) {
 	}
 	empty := len(s.viewers) == 0
 	s.mu.Unlock()
+	if empty {
+		s.cancel()
+	}
+}
+
+func (s *Session) cancelIfEmpty() {
+	s.mu.RLock()
+	empty := len(s.viewers) == 0
+	s.mu.RUnlock()
 	if empty {
 		s.cancel()
 	}
