@@ -5,7 +5,6 @@ import (
 	"net/http"
 	"net/url"
 	"path"
-	"sort"
 	"strings"
 	"time"
 
@@ -240,22 +239,6 @@ func liveStreamKey(providerID string, target *url.URL) string {
 
 func (h *Handler) LiveSnapshots() []stream.Snapshot {
 	return h.live.Snapshots()
-}
-
-func cacheKey(providerID, endpoint string, target *url.URL) string {
-	q := target.Query()
-	q.Del("username")
-	q.Del("password")
-	keys := make([]string, 0, len(q))
-	for key := range q {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	parts := []string{"iptv", "cache", providerID, endpoint, strings.TrimPrefix(target.Path, "/")}
-	for _, key := range keys {
-		parts = append(parts, key+"="+strings.Join(q[key], ","))
-	}
-	return strings.Join(parts, ":")
 }
 
 func copySafeRequestHeaders(dst, src http.Header) {
