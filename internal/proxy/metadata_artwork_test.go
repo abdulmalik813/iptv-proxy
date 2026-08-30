@@ -11,6 +11,7 @@ import (
 
 func TestReplaceM3ULogoAttributePreservesLine(t *testing.T) {
 	line := []byte(`#EXTINF:-1 tvg-id="abc" tvg-logo="https://provider.test/images/logo.png" group-title="News",Channel`)
+	line = bytes.ReplaceAll(line, []byte(`\"`), []byte(`"`))
 	rewrites := map[string]string{
 		"https://provider.test/images/logo.png": "https://proxy.test/p/_artwork/token",
 	}
@@ -26,6 +27,7 @@ func TestReplaceM3ULogoAttributePreservesLine(t *testing.T) {
 
 func TestReplaceXMLTVIconOnlyTouchesIconSrc(t *testing.T) {
 	body := []byte(`<tv><channel id="a"><icon src="https://provider.test/logo.png"/><display-name>One</display-name></channel><programme channel="a"><icon src='https://provider.test/show.jpg'/></programme></tv>`)
+	body = bytes.ReplaceAll(body, []byte(`\"`), []byte(`"`))
 	rewrites := map[string]string{
 		"https://provider.test/logo.png": "https://proxy.test/p/_artwork/channel",
 		"https://provider.test/show.jpg":  "https://proxy.test/p/_artwork/show",
@@ -43,6 +45,7 @@ func TestReplaceXMLTVIconOnlyTouchesIconSrc(t *testing.T) {
 
 func TestJSONArtworkRewritePreservesNumbers(t *testing.T) {
 	body := []byte(`[{"stream_id":1234567890123456789,"stream_icon":"https://provider.test/live.png","nested":{"backdrop_path":["https://provider.test/a.jpg"]}}]`)
+	body = bytes.ReplaceAll(body, []byte(`\"`), []byte(`"`))
 	decoder := json.NewDecoder(bytes.NewReader(body))
 	decoder.UseNumber()
 	var value any
