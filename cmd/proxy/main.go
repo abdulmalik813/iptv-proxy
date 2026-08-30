@@ -160,6 +160,24 @@ func main() {
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"success": true, "replaced": 1})
 	})
+	mux.HandleFunc("/internal/cache/start", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			methodNotAllowed(w, http.MethodPost)
+			return
+		}
+		if !validInternalToken(r, internalToken) {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), 30*time.Minute)
+		defer cancel()
+		result := iptvHandler.WarmAllCache(ctx)
+		status := http.StatusOK
+		if result.Failed > 0 && result.Succeeded == 0 {
+			status = http.StatusBadGateway
+		}
+		writeJSON(w, status, map[string]any{"success": result.Failed == 0, "data": result})
+	})
 
 	if uiBasePath == "/" {
 		mux.Handle("/", uiProxy)
