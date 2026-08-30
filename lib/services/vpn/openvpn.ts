@@ -279,7 +279,7 @@ export class OpenvpnService {
       fs.mkdirSync(RUNTIME_DIR, { recursive: true, mode: 0o700 });
       for (const file of [PID_FILE, LOG_FILE, CONFIG_FILE, AUTH_FILE]) {
         try {
-          if (fs.existsSync(file)) fs.unlinkSync(file);
+          if (fs.existsSync(/*turbopackIgnore: true*/ file)) fs.unlinkSync(file);
         } catch {
           // Best effort cleanup.
         }
@@ -394,7 +394,7 @@ export class OpenvpnService {
 
       for (const file of [PID_FILE, CONFIG_FILE, AUTH_FILE]) {
         try {
-          if (fs.existsSync(file)) fs.unlinkSync(file);
+          if (fs.existsSync(/*turbopackIgnore: true*/ file)) fs.unlinkSync(file);
         } catch {
           // Ignore cleanup errors.
         }
