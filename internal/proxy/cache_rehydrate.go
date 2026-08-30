@@ -9,6 +9,7 @@ import (
 	"time"
 
 	cachepkg "github.com/abdulmalik813/iptv-proxy/internal/cache"
+	"github.com/abdulmalik813/iptv-proxy/internal/provider"
 )
 
 func (h *Handler) RehydratePersistedCache(ctx context.Context) (int, error) {
@@ -38,14 +39,14 @@ func (h *Handler) RehydratePersistedCache(ctx context.Context) (int, error) {
 	return registered, nil
 }
 
-func (h *Handler) rebuildTargetFromCacheKey(ctx context.Context, key string) (providerResult, string, *url.URL, error) {
+func (h *Handler) rebuildTargetFromCacheKey(ctx context.Context, key string) (provider.Provider, string, *url.URL, error) {
 	const prefix = "iptv:cache:"
 	if !strings.HasPrefix(key, prefix) {
-		return providerResult{}, "", nil, errors.New("invalid cache key")
+		return provider.Provider{}, "", nil, errors.New("invalid cache key")
 	}
 	parts := strings.Split(strings.TrimPrefix(key, prefix), ":")
 	if len(parts) < 3 {
-		return providerResult{}, "", nil, errors.New("invalid cache key")
+		return provider.Provider{}, "", nil, errors.New("invalid cache key")
 	}
 	providerID := parts[0]
 	endpoint := parts[1]
@@ -53,11 +54,11 @@ func (h *Handler) rebuildTargetFromCacheKey(ctx context.Context, key string) (pr
 
 	p, err := h.resolver.ProviderByID(ctx, providerID)
 	if err != nil {
-		return providerResult{}, "", nil, err
+		return provider.Provider{}, "", nil, err
 	}
 	base, err := url.Parse(strings.TrimSuffix(p.Host, "/"))
 	if err != nil {
-		return providerResult{}, "", nil, err
+		return provider.Provider{}, "", nil, err
 	}
 	base.Path = strings.TrimSuffix(base.Path, "/") + "/" + strings.TrimPrefix(cachedPath, "/")
 	q := base.Query()
@@ -68,34 +69,10 @@ func (h *Handler) rebuildTargetFromCacheKey(ctx context.Context, key string) (pr
 	for i := 3; i < len(parts); i++ {
 		name, value, ok := strings.Cut(parts[i], "=")
 		if !ok || name == "" {
-			if i > 3 {
-				prevName, prevValue, prevOK := strings.Cut(parts[i-1], "=")
-				if prevOK {
-					q.Set(prevName, prevValue+":"+parts[i])
-				}
-			}
 			continue
 		}
 		q.Set(name, value)
 	}
 	base.RawQuery = q.Encode()
-	return providerResult{Provider: p}, endpoint, base, nil
-}
-
-type providerResult struct {
-	Provider interfaceProvider
-}
-
-type interfaceProvider = struct {
-	ID                 string
-	Name               string
-	Host               string
-	Route              string
-	UpstreamUsername   string
-	UpstreamPassword   string
-	LocalUsername      string
-	LocalPassword      string
-	IsDefault          int
-	CacheDurationHours int
-	Enabled            int
+	return p, endpoint, base, nil
 }
