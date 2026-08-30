@@ -58,6 +58,19 @@ test('cache duration zero bypasses Redis and calls the provider directly', async
   assert.match(cache, /if ttl\s*<=\s*0\s*\{\s*resp\s*,\s*err\s*:=\s*fetch\(ctx\)/);
 });
 
+test('persisted Redis cache fetch jobs are rehydrated after every Go restart', async () => {
+  const main = await source('cmd/proxy/main.go');
+  const rehydrate = await source('internal/proxy/cache_rehydrate.go');
+  const resolver = await source('internal/routing/resolver.go');
+  assert.match(main, /RehydratePersistedCache/);
+  assert.match(main, /rehydrated %d persisted IPTV cache fetch jobs/);
+  assert.match(rehydrate, /h\.cache\.Entries/);
+  assert.match(rehydrate, /rebuildTargetFromCacheKey/);
+  assert.match(rehydrate, /h\.cache\.GetOrFetch/);
+  assert.match(rehydrate, /h\.fetchCacheable/);
+  assert.match(resolver, /ProviderByID/);
+});
+
 test('purge fetches and validates replacement before atomically replacing old cache', async () => {
   const cache = compact(await source('internal/cache/manager.go'));
   const main = await source('cmd/proxy/main.go');
@@ -72,11 +85,11 @@ test('purge fetches and validates replacement before atomically replacing old ca
   assert.match(page, /fresh provider data was fetched and validated before the old value was atomically replaced/);
 });
 
-test('purge all never deletes unregistered cache entries and only replaces entries with active fetch specs', async () => {
+test('purge all never deletes cache entries before replacements are validated', async () => {
   const cache = compact(await source('internal/cache/manager.go'));
   assert.match(cache, /PurgeAll/);
-  assert.match(cache, /if !registered \{ continue \}/);
   assert.match(cache, /m\.replaceNow\(ctx, entry\.Key\)/);
+  assert.doesNotMatch(cache, /m\.client\.Del\(ctx, entry\.Key/);
 });
 
 test('cached IPTV metadata validates replacements before storing them', async () => {
