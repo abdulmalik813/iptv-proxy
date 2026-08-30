@@ -58,6 +58,14 @@ func main() {
 	traceLogger := proxylog.New(uiURL, internalToken)
 	iptvHandler := proxycore.NewHandler(resolver, cacheManager, redisClient, traceLogger, appURL)
 
+	rehydrateCtx, rehydrateCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	if count, err := iptvHandler.RehydratePersistedCache(rehydrateCtx); err != nil {
+		log.Printf("persisted cache rehydration failed: %v", err)
+	} else {
+		log.Printf("rehydrated %d persisted IPTV cache fetch jobs", count)
+	}
+	rehydrateCancel()
+
 	uiTarget, _ := url.Parse("http://127.0.0.1:3000")
 	uiProxy := httputil.NewSingleHostReverseProxy(uiTarget)
 	uiProxy.ErrorHandler = func(w http.ResponseWriter, _ *http.Request, proxyErr error) {
