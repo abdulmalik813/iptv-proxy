@@ -48,8 +48,10 @@ test('Next.js and Go run in the same production container', async () => {
   assert.match(entrypoint, /iptv-go-proxy/);
   assert.match(entrypoint, /node server\.js/);
   assert.match(dockerfile, /EXPOSE 3000 8080/);
+  assert.match(dockerfile, /golang:1\.27-bookworm/);
   assert.match(compose, /GO_PROXY_ADDR: :8080/);
-  assert.match(compose, /127\.0\.0\.1:3000\/ui\/api\/health/);
+  assert.match(compose, /UI_PATH=/);
+  assert.match(compose, /\$\$UI_URL/);
   assert.match(compose, /127\.0\.0\.1:8080\/health/);
 });
 
