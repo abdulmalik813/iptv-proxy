@@ -179,11 +179,34 @@ test('provider responses mask credentials and reserve proxy routes', async () =>
   }
 });
 
+test('provider account diagnostics test Xtream credentials and render success or error per provider', async () => {
+  const route = await source('app/api/providers/[id]/test/route.ts');
+  const page = await source('app/providers/tests/page.tsx');
+  const sidebar = await source('components/layout/sidebar.tsx');
+
+  assert.match(route, /player_api\.php/);
+  assert.match(route, /upstream_username/);
+  assert.match(route, /upstream_password/);
+  assert.match(route, /AbortSignal\.timeout\(15_000\)/);
+  assert.match(route, /userInfo\.auth === 1/);
+  assert.match(route, /safeAccountInfo/);
+  assert.match(route, /safeServerInfo/);
+  assert.doesNotMatch(route, /password:\s*provider\.upstream_password/);
+  assert.match(page, /Test All/);
+  assert.match(page, /Test Account/);
+  assert.match(page, /Connected & Authenticated/);
+  assert.match(page, /Test Failed/);
+  assert.match(page, /state\.error/);
+  assert.match(sidebar, /Provider Tests/);
+  assert.match(sidebar, /\/providers\/tests/);
+});
+
 test('core management routes exist', async () => {
   const routes = [
     'app/api/auth/login/route.ts',
     'app/api/auth/logout/route.ts',
     'app/api/providers/route.ts',
+    'app/api/providers/[id]/test/route.ts',
     'app/api/vpn/connect/route.ts',
     'app/api/vpn/disconnect/route.ts',
     'app/api/vpn/status/route.ts',
