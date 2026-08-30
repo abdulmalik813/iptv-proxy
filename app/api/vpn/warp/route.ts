@@ -27,20 +27,51 @@ export async function POST(req: NextRequest) {
     if (!parsed.success) return NextResponse.json({ success: false, error: 'Invalid WARP action.' }, { status: 400 });
     const { action } = parsed.data;
 
-    if (action === 'register') {
-      const result = await WarpService.register();
-      return NextResponse.json({ success: true, message: result.message, data: await WarpService.getStatus() });
-    }
-    if (action === 'reset') {
+    if (action === 'register' || action === 'reset') {
+      try {
+        await VpnManager.assertWarpMaintenanceAllowed(action);
+      } catch (error) {
+        return NextResponse.json(
+          { success: false, error: error instanceof Error ? error.message : String(error) },
+          { status: 409 }
+        );
+      }
+
+      const status = await WarpService.getStatus();
+      if (action === 'register') {
+        if (status.registered) {
+          return NextResponse.json({ success: false, error: 'Cloudflare WARP is already registered.' }, { status: 409 });
+        }
+        const result = await WarpService.register();
+        return NextResponse.json({ success: true, message: result.message, data: await WarpService.getStatus() });
+      }
+
+      if (!status.registered) {
+        return NextResponse.json({ success: false, error: 'Cloudflare WARP is not registered, so there is nothing to reset.' }, { status: 409 });
+      }
       const result = await WarpService.reset();
       return NextResponse.json({ success: true, message: result.message, data: await WarpService.getStatus() });
     }
-    if (VpnManager.isOperationInProgress()) return NextResponse.json({ success: false, error: 'Another VPN operation is already in progress.' }, { status: 409 });
+
+    if (VpnManager.isOperationInProgress()) {
+      return NextResponse.json({ success: false, error: 'Another VPN operation is already in progress.' }, { status: 409 });
+    }
+
     if (action === 'connect') {
       const result = await VpnManager.connectWarp();
-      if (!result.success) return NextResponse.json({ success: false, error: result.error }, { status: 500 });
+      if (!result.success) {
+        const status = await VpnManager.getVpnStatusSummary();
+        const code = status.status === 'connected' ? 409 : 500;
+        return NextResponse.json({ success: false, error: result.error, data: status }, { status: code });
+      }
       return NextResponse.json({ success: true, data: await VpnManager.getVpnStatusSummary() });
     }
+
+    const summary = await VpnManager.getVpnStatusSummary();
+    if (summary.status !== 'connected' || summary.type !== 'warp') {
+      return NextResponse.json({ success: false, error: 'Cloudflare WARP is not the active VPN.' }, { status: 409 });
+    }
+
     const result = await VpnManager.disconnect('Cloudflare WARP disconnect requested');
     if (!result.success) return NextResponse.json({ success: false, error: result.error }, { status: 500 });
     return NextResponse.json({ success: true, data: await VpnManager.getVpnStatusSummary() });
