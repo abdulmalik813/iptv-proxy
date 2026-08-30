@@ -148,6 +148,10 @@ func (h *Handler) fetchCacheable(ctx context.Context, p provider.Provider, endpo
 	if err := validateCacheBody(endpoint, body); err != nil {
 		return cachepkg.Response{}, err
 	}
+	// Rewrite provider/CDN artwork only after validation so cache integrity checks
+	// always inspect the provider's original bytes. Stream URLs in get.php remain
+	// raw here and are personalized for each local user when served.
+	body = h.rewriteCachedArtwork(ctx, p, endpoint, body)
 	return cachepkg.Response{
 		Status:         resp.StatusCode,
 		ContentType:    resp.Header.Get("Content-Type"),

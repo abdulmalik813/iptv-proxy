@@ -136,6 +136,12 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.serveHLSToken(recorder, r, resolved)
 		return
 	}
+	if strings.HasPrefix(resolved.RemainingPath, "/_artwork/") {
+		completionMeta["endpoint"] = "_artwork"
+		h.trace(ctx, "debug", "artwork.token", "Handling proxied provider artwork request", providerMeta(resolved.Provider, "_artwork", nil))
+		h.serveArtworkToken(recorder, r, resolved)
+		return
+	}
 
 	upstreamURL, endpoint, clientUser, err := buildUpstreamURL(resolved, r)
 	if err != nil {

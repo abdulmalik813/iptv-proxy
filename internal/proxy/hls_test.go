@@ -78,7 +78,7 @@ func TestRewritePlaylistAcceptsBOMIndentedTagsAndInlineDataURI(t *testing.T) {
 	}
 }
 
-func TestServeDirectSwitchesMislabeledTimeshiftTSToHLS(t *testing.T) {
+func TestServeDirectDoesNotSniffCatchupTSBodyAsHLS(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "video/mp2t")
 		_, _ = io.WriteString(w, "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-ENDLIST\n")
@@ -88,6 +88,34 @@ func TestServeDirectSwitchesMislabeledTimeshiftTSToHLS(t *testing.T) {
 	target, _ := url.Parse(upstream.URL + "/timeshift/up/pass/60/2026-08-30:01-00/123.ts")
 	h := &Handler{streamClient: upstream.Client()}
 	r := httptest.NewRequest(http.MethodGet, "http://proxy/timeshift/local/secret/60/2026-08-30:01-00/123.ts", nil)
+	w := httptest.NewRecorder()
+
+	h.serveDirect(w, r, provider.Provider{}, target)
+
+	resp := w.Result()
+	defer resp.Body.Close()
+	if got := resp.Header.Get("Content-Type"); got != "video/mp2t" {
+		t.Fatalf("Content-Type=%q", got)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(string(body), "#EXTM3U\n") {
+		t.Fatalf("body=%q", body)
+	}
+}
+
+func TestServeDirectStillHandlesExplicitCatchupHLS(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
+		_, _ = io.WriteString(w, "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-ENDLIST\n")
+	}))
+	defer upstream.Close()
+
+	target, _ := url.Parse(upstream.URL + "/timeshift/up/pass/60/2026-08-30:01-00/123.m3u8")
+	h := &Handler{streamClient: upstream.Client()}
+	r := httptest.NewRequest(http.MethodGet, "http://proxy/timeshift/local/secret/60/2026-08-30:01-00/123.m3u8", nil)
 	w := httptest.NewRecorder()
 
 	h.serveDirect(w, r, provider.Provider{}, target)
