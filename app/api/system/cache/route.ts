@@ -26,8 +26,9 @@ export async function GET() {
   }
 }
 
-// Bulk refresh: create any missing standard heavy-cache entries and safely
-// replace existing ones. This is the one admin action for the full cache set.
+// Bulk refresh starts a detached Redis-owned job. The Go core returns quickly,
+// while GET exposes persistent progress so a browser reload does not cancel or
+// hide the refresh.
 export async function POST(req: NextRequest) {
   const requestError = validateMutationRequest(req);
   if (requestError) return NextResponse.json({ success: false, error: requestError }, { status: 403 });
@@ -37,7 +38,7 @@ export async function POST(req: NextRequest) {
     const response = await fetch('http://127.0.0.1:8080/internal/cache/start', {
       method: 'POST',
       headers: headers(),
-      signal: AbortSignal.timeout(30 * 60 * 1000),
+      signal: AbortSignal.timeout(15_000),
     });
     return NextResponse.json(await readJson(response), { status: response.status });
   } catch (error) {
@@ -45,8 +46,9 @@ export async function POST(req: NextRequest) {
   }
 }
 
-// Single-entry refresh only. Bulk refresh is POST above so there is no second,
-// competing "repull all" behavior.
+// Single-entry refresh also starts a detached replacement. The existing
+// per-entry Redis lock is shared with automatic refreshes, so only one provider
+// pull can own a cache key at a time.
 export async function DELETE(req: NextRequest) {
   const requestError = validateMutationRequest(req);
   if (requestError) return NextResponse.json({ success: false, error: requestError }, { status: 403 });
@@ -58,7 +60,7 @@ export async function DELETE(req: NextRequest) {
     const response = await fetch(`http://127.0.0.1:8080/internal/cache?key=${encodeURIComponent(key)}`, {
       method: 'DELETE',
       headers: headers(),
-      signal: AbortSignal.timeout(10 * 60 * 1000),
+      signal: AbortSignal.timeout(15_000),
     });
     return NextResponse.json(await readJson(response), { status: response.status });
   } catch (error) {
