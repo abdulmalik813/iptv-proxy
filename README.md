@@ -52,18 +52,25 @@ Route `/ui/*` to port `3000` and IPTV/root traffic to port `8080`.
 ```env
 SESSION_SECRET=<secure random value>
 INTERNAL_API_TOKEN=<secure random value>
-REDIS_PASSWORD=<secure random value>
 UI_URL=https://iptv.example.com/ui
 APP_URL=https://iptv.example.com
 ```
 
-Generate each secret independently with:
+Recommended optional Redis-specific secret:
+
+```env
+REDIS_PASSWORD=<secure random value>
+```
+
+Generate secrets with:
 
 ```bash
 openssl rand -hex 32
 ```
 
-`INTERNAL_API_TOKEN` and `REDIS_PASSWORD` are server-side only. Do not expose either value to browsers or IPTV clients. The Go core authenticates to management APIs with:
+`INTERNAL_API_TOKEN` is required and server-side only. Redis is always password protected: when `REDIS_PASSWORD` is configured it is used as the Redis secret; otherwise the server reuses `INTERNAL_API_TOKEN` so existing deployments can upgrade without becoming unavailable. A separate `REDIS_PASSWORD` is recommended for secret separation. Do not expose either value to browsers or IPTV clients.
+
+The Go core authenticates to management APIs with:
 
 ```text
 Authorization: Bearer <INTERNAL_API_TOKEN>
@@ -79,7 +86,7 @@ The application container requires:
 - `/dev/net/tun`
 - IPv4 forwarding (`net.ipv4.ip_forward=1`)
 
-The application and Redis healthchecks must both pass before the stack is considered healthy. Redis requires `REDIS_PASSWORD`; deployments intentionally fail closed when it is missing.
+The application and Redis healthchecks must both pass before the stack is considered healthy. Redis authentication is enabled on every production start. Existing deployments do not have to add a new variable immediately because `INTERNAL_API_TOKEN` is the secure fallback.
 
 ## Development
 
@@ -92,7 +99,7 @@ pnpm install
 pnpm dev
 ```
 
-Run the Go core separately during development when needed. `INTERNAL_API_TOKEN` and `REDIS_PASSWORD` must be set:
+Run the Go core separately during development when needed. `INTERNAL_API_TOKEN` must be set; `REDIS_PASSWORD` can optionally override the Redis credential:
 
 ```bash
 go run ./cmd/proxy
