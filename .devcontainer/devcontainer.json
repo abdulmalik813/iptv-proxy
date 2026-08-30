@@ -19,6 +19,8 @@
   ],
   "containerEnv": {
     "DATABASE_PATH": "${containerWorkspaceFolder}/data/iptv-proxy.db",
+    "UI_URL": "http://localhost:3000/ui",
+    "GO_PROXY_ADDR": ":8080",
     "COOKIE_SECURE": "false",
     "NEXT_TELEMETRY_DISABLED": "1",
     "VPN_BYPASS_TCP_PORTS": "3000,8080"
@@ -28,15 +30,16 @@
       "extensions": [
         "dbaeumer.vscode-eslint",
         "esbenp.prettier-vscode",
-        "bradlc.vscode-tailwindcss"
+        "bradlc.vscode-tailwindcss",
+        "golang.go"
       ]
     }
   },
   "forwardPorts": [3000, 8080],
   "portsAttributes": {
     "3000": { "label": "Next.js Admin" },
-    "8080": { "label": "Future Go Proxy" }
+    "8080": { "label": "Go Proxy" }
   },
-  "postCreateCommand": "mkdir -p node_modules data /root/.local/share/pnpm/store /run/dbus /var/lib/cloudflare-warp && corepack enable && corepack prepare pnpm@11.24.0 --activate && pnpm install",
+  "postCreateCommand": "mkdir -p node_modules data /root/.local/share/pnpm/store /run/dbus /var/lib/cloudflare-warp && corepack enable && corepack prepare pnpm@11.24.0 --activate && pnpm install && go version",
   "postStartCommand": "mkdir -p /run/dbus /var/lib/cloudflare-warp && (pgrep -x dbus-daemon >/dev/null 2>&1 || dbus-daemon --system --fork || true)"
 }
