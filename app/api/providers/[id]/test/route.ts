@@ -58,6 +58,15 @@ function safeServerInfo(serverInfo: XtreamServerInfo | undefined) {
   };
 }
 
+function baseResult(provider: Awaited<ReturnType<typeof ProviderService.getProviderById>>, elapsedMs: number) {
+  if (!provider) throw new Error('Provider not found.');
+  return {
+    provider: { id: provider.id, name: provider.name, host: provider.host, route: provider.route },
+    elapsedMs,
+    testedAt: new Date().toISOString(),
+  };
+}
+
 export async function POST(req: NextRequest, context: { params: Promise<{ id: string }> }) {
   const requestError = validateMutationRequest(req);
   if (requestError) return NextResponse.json({ success: false, error: requestError }, { status: 403 });
@@ -81,30 +90,88 @@ export async function POST(req: NextRequest, context: { params: Promise<{ id: st
       redirect: 'follow',
       signal: AbortSignal.timeout(15_000),
       headers: {
-        Accept: 'application/json',
+        Accept: 'application/json,text/html,text/plain,*/*',
         'User-Agent': 'IPTV-Proxy/1.0 Provider-Test',
       },
     });
 
     const elapsedMs = Date.now() - startedAt;
     const text = await response.text();
+    const contentType = response.headers.get('content-type') || 'text/plain';
+
     if (!response.ok) {
-      throw new Error(`Upstream returned HTTP ${response.status}${response.statusText ? ` ${response.statusText}` : ''}.`);
+      await LogService.warn('provider', 'account-test', `Provider "${provider.name}" returned HTTP ${response.status}.`, {
+        provider_id: provider.id,
+        elapsed_ms: elapsedMs,
+        content_type: contentType,
+      });
+      return NextResponse.json({
+        success: false,
+        error: `Upstream returned HTTP ${response.status}${response.statusText ? ` ${response.statusText}` : ''}.`,
+        data: {
+          ...baseResult(provider, elapsedMs),
+          reachable: true,
+          authenticated: false,
+          rawResponse: text,
+          rawContentType: contentType,
+          upstreamStatus: response.status,
+        },
+      }, { status: 502 });
     }
 
     let payload: { user_info?: XtreamUserInfo; server_info?: XtreamServerInfo };
     try {
       payload = JSON.parse(text) as { user_info?: XtreamUserInfo; server_info?: XtreamServerInfo };
     } catch {
-      throw new Error('Upstream did not return valid Xtream JSON account information.');
+      await LogService.warn('provider', 'account-test', `Provider "${provider.name}" returned a non-JSON response.`, {
+        provider_id: provider.id,
+        elapsed_ms: elapsedMs,
+        content_type: contentType,
+      });
+      return NextResponse.json({
+        success: false,
+        error: contentType.toLowerCase().includes('html') ? 'Upstream returned HTML instead of Xtream JSON.' : 'Upstream returned a non-JSON response.',
+        data: {
+          ...baseResult(provider, elapsedMs),
+          reachable: true,
+          authenticated: false,
+          rawResponse: text,
+          rawContentType: contentType,
+          upstreamStatus: response.status,
+        },
+      }, { status: 502 });
     }
 
     const userInfo = payload.user_info;
-    if (!userInfo) throw new Error('Upstream response did not include user_info.');
+    if (!userInfo) {
+      return NextResponse.json({
+        success: false,
+        error: 'Upstream response did not include user_info.',
+        data: {
+          ...baseResult(provider, elapsedMs),
+          reachable: true,
+          authenticated: false,
+          rawResponse: text,
+          rawContentType: contentType,
+          upstreamStatus: response.status,
+        },
+      }, { status: 502 });
+    }
 
     const authenticated = userInfo.auth === 1 || userInfo.auth === '1';
     if (!authenticated) {
-      throw new Error(userInfo.message?.trim() || `Xtream authentication failed${userInfo.status ? ` (${userInfo.status})` : ''}.`);
+      return NextResponse.json({
+        success: false,
+        error: userInfo.message?.trim() || `Xtream authentication failed${userInfo.status ? ` (${userInfo.status})` : ''}.`,
+        data: {
+          ...baseResult(provider, elapsedMs),
+          reachable: true,
+          authenticated: false,
+          rawResponse: text,
+          rawContentType: contentType,
+          upstreamStatus: response.status,
+        },
+      }, { status: 502 });
     }
 
     await LogService.info('provider', 'account-test', `Provider "${provider.name}" account test succeeded.`, {
@@ -116,13 +183,11 @@ export async function POST(req: NextRequest, context: { params: Promise<{ id: st
     return NextResponse.json({
       success: true,
       data: {
-        provider: { id: provider.id, name: provider.name, host: provider.host, route: provider.route },
+        ...baseResult(provider, elapsedMs),
         reachable: true,
         authenticated: true,
-        elapsedMs,
         account: safeAccountInfo(userInfo),
         server: safeServerInfo(payload.server_info),
-        testedAt: new Date().toISOString(),
       },
     });
   } catch (error) {
@@ -142,11 +207,9 @@ export async function POST(req: NextRequest, context: { params: Promise<{ id: st
       success: false,
       error: message,
       data: {
-        provider: { id: provider.id, name: provider.name, host: provider.host, route: provider.route },
+        ...baseResult(provider, elapsedMs),
         reachable: false,
         authenticated: false,
-        elapsedMs,
-        testedAt: new Date().toISOString(),
       },
     }, { status: 502 });
   }
