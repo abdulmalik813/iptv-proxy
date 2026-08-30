@@ -31,7 +31,8 @@ func (h *Handler) rewriteM3UPlaylist(p provider.Provider, body []byte) []byte {
 }
 
 func (h *Handler) rewriteM3UTarget(p provider.Provider, raw string) (string, bool) {
-	target, err := url.Parse(raw)
+	urlPart, pipeOptions := splitM3UPipeOptions(raw)
+	target, err := url.Parse(urlPart)
 	if err != nil || target.Scheme == "" || target.Host == "" {
 		return "", false
 	}
@@ -70,7 +71,15 @@ func (h *Handler) rewriteM3UTarget(p provider.Provider, raw string) (string, boo
 	}
 
 	publicBase := strings.TrimSuffix(h.appURL, "/") + "/" + p.Route
-	return publicBase + streamPath + querySuffix(target.RawQuery), true
+	return publicBase + streamPath + querySuffix(target.RawQuery) + pipeOptions, true
+}
+
+func splitM3UPipeOptions(raw string) (string, string) {
+	index := strings.IndexByte(raw, '|')
+	if index < 0 {
+		return raw, ""
+	}
+	return raw[:index], raw[index:]
 }
 
 func querySuffix(rawQuery string) string {
