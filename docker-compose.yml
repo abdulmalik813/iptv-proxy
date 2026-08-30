@@ -45,6 +45,10 @@ services:
         UI_URL: ${UI_URL:-http://localhost:3000/ui}
     container_name: iptv-go-proxy
     restart: unless-stopped
+    depends_on:
+      iptv-proxy-admin:
+        condition: service_healthy
+    network_mode: "service:iptv-proxy-admin"
     command: ["/usr/local/bin/iptv-go-proxy"]
     environment:
       GO_PROXY_ADDR: :8080
@@ -54,8 +58,6 @@ services:
       timeout: 5s
       retries: 3
       start_period: 10s
-    networks:
-      - iptv-internal
 
 networks:
   iptv-internal:
