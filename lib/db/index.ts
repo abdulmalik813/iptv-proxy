@@ -173,7 +173,9 @@ export async function initDatabase(): Promise<void> {
     const dbPath = resolveDatabasePath();
     let databaseExisted = false;
     try {
-      databaseExisted = fs.existsSync(dbPath) && fs.statSync(dbPath).size > 0;
+      databaseExisted =
+        fs.existsSync(/*turbopackIgnore: true*/ dbPath) &&
+        fs.statSync(/*turbopackIgnore: true*/ dbPath).size > 0;
     } catch {
       databaseExisted = false;
     }
