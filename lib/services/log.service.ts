@@ -51,10 +51,7 @@ function scrubValue(value: unknown, key = ''): unknown {
   if (Array.isArray(value)) return value.map((item) => scrubValue(item));
   if (value && typeof value === 'object') {
     return Object.fromEntries(
-      Object.entries(value as Record<string, unknown>).map(([childKey, childValue]) => [
-        childKey,
-        scrubValue(childValue, childKey),
-      ])
+      Object.entries(value as Record<string, unknown>).map(([childKey, childValue]) => [childKey, scrubValue(childValue, childKey)])
     );
   }
   if (typeof value === 'string') return sanitizeLogString(value);
@@ -64,6 +61,19 @@ function scrubValue(value: unknown, key = ''): unknown {
 export function sanitizeMetadata(metadata?: Record<string, unknown> | null): string | null {
   if (!metadata) return null;
   return JSON.stringify(scrubValue(metadata));
+}
+
+function rowToLog(row: Record<string, unknown>): LogEntry {
+  return {
+    id: String(row.id),
+    timestamp: String(row.timestamp),
+    level: row.level as LogLevel,
+    source: row.source as LogSource,
+    category: String(row.category),
+    message: String(row.message),
+    metadata_json: row.metadata_json ? String(row.metadata_json) : null,
+    created_at: String(row.created_at),
+  };
 }
 
 export class LogService {
@@ -77,7 +87,6 @@ export class LogService {
     await initDatabase();
     const db = getDb();
     const now = new Date().toISOString();
-
     const entry: LogEntry = {
       id: crypto.randomUUID(),
       timestamp: now,
@@ -89,24 +98,11 @@ export class LogService {
       created_at: now,
     };
 
-    try {
-      await db.execute({
-        sql: `INSERT INTO logs (id, timestamp, level, source, category, message, metadata_json, created_at)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-        args: [
-          entry.id,
-          entry.timestamp,
-          entry.level,
-          entry.source,
-          entry.category,
-          entry.message,
-          entry.metadata_json,
-          entry.created_at,
-        ],
-      });
-    } catch (error) {
-      console.error('Failed to persist log to SQLite:', error);
-    }
+    await db.execute({
+      sql: `INSERT INTO logs (id, timestamp, level, source, category, message, metadata_json, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      args: [entry.id, entry.timestamp, entry.level, entry.source, entry.category, entry.message, entry.metadata_json, entry.created_at],
+    });
 
     logEmitter.emit('new_log', entry);
     return entry;
@@ -128,6 +124,45 @@ export class LogService {
     return this.writeLog('debug', source, category, message, metadata);
   }
 
+  static async getLog(id: string): Promise<LogEntry | null> {
+    await initDatabase();
+    const res = await getDb().execute({
+      sql: 'SELECT id, timestamp, level, source, category, message, metadata_json, created_at FROM logs WHERE id = ? LIMIT 1',
+      args: [id],
+    });
+    return res.rows[0] ? rowToLog(res.rows[0] as Record<string, unknown>) : null;
+  }
+
+  static async updateLog(
+    id: string,
+    input: Partial<{ level: LogLevel; source: LogSource; category: string; message: string; metadata: Record<string, unknown> | null }>
+  ): Promise<LogEntry | null> {
+    const existing = await this.getLog(id);
+    if (!existing) return null;
+
+    const level = input.level ?? existing.level;
+    const source = input.source ?? existing.source;
+    const category = input.category === undefined ? existing.category : sanitizeLogString(input.category).slice(0, 128);
+    const message = input.message === undefined ? existing.message : sanitizeLogString(input.message);
+    const metadataJson = input.metadata === undefined ? existing.metadata_json : sanitizeMetadata(input.metadata);
+
+    await getDb().execute({
+      sql: 'UPDATE logs SET level = ?, source = ?, category = ?, message = ?, metadata_json = ? WHERE id = ?',
+      args: [level, source, category, message, metadataJson, id],
+    });
+
+    const updated = await this.getLog(id);
+    if (updated) logEmitter.emit('updated_log', updated);
+    return updated;
+  }
+
+  static async deleteLog(id: string): Promise<boolean> {
+    await initDatabase();
+    const res = await getDb().execute({ sql: 'DELETE FROM logs WHERE id = ?', args: [id] });
+    if (res.rowsAffected > 0) logEmitter.emit('deleted_log', { id });
+    return res.rowsAffected > 0;
+  }
+
   static async queryLogs(params: {
     level?: string;
     source?: string;
@@ -139,7 +174,6 @@ export class LogService {
   }): Promise<{ logs: LogEntry[]; total: number }> {
     await initDatabase();
     const db = getDb();
-
     const limit = Math.max(1, Math.min(Number.isFinite(params.limit) ? params.limit || 100 : 100, 500));
     const offset = Math.max(0, Number.isFinite(params.offset) ? params.offset || 0 : 0);
     const order = params.order === 'ASC' ? 'ASC' : 'DESC';
@@ -176,36 +210,21 @@ export class LogService {
 
     return {
       total: Number(countRes.rows[0]?.count || 0),
-      logs: rowsRes.rows.map((row) => ({
-        id: String(row.id),
-        timestamp: String(row.timestamp),
-        level: row.level as LogLevel,
-        source: row.source as LogSource,
-        category: String(row.category),
-        message: String(row.message),
-        metadata_json: row.metadata_json ? String(row.metadata_json) : null,
-        created_at: String(row.created_at),
-      })),
+      logs: rowsRes.rows.map((row) => rowToLog(row as Record<string, unknown>)),
     };
   }
 
   static async clearAllLogs(): Promise<number> {
     await initDatabase();
-    const db = getDb();
-    const res = await db.execute('DELETE FROM logs');
-    await this.info('system', 'logs', 'Application logs were cleared by administrator.');
+    const res = await getDb().execute('DELETE FROM logs');
     return res.rowsAffected;
   }
 
   static async pruneOldLogs(days: number): Promise<number> {
     await initDatabase();
-    const db = getDb();
     const safeDays = Math.max(1, Math.min(365, Math.trunc(days)));
     const cutoff = new Date(Date.now() - safeDays * 86_400_000).toISOString();
-    const res = await db.execute({ sql: 'DELETE FROM logs WHERE timestamp < ?', args: [cutoff] });
-    if (res.rowsAffected > 0) {
-      await this.info('system', 'retention', `Pruned ${res.rowsAffected} log entries older than ${safeDays} days.`);
-    }
+    const res = await getDb().execute({ sql: 'DELETE FROM logs WHERE timestamp < ?', args: [cutoff] });
     return res.rowsAffected;
   }
 }
