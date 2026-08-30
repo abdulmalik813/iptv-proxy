@@ -1,5 +1,5 @@
 {
-  "name": "iptv-reverse-proxy",
+  "name": "iptv-proxy",
   "version": "0.2.0",
   "private": true,
   "packageManager": "pnpm@11.24.0",
