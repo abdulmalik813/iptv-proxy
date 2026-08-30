@@ -99,7 +99,7 @@ func (h *Handler) fetchCacheable(ctx context.Context, p provider.Provider, endpo
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxMetadataBytes+1))
+	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return cachepkg.Response{}, err
 	}
@@ -114,9 +114,6 @@ func (h *Handler) fetchCacheable(ctx context.Context, p provider.Provider, endpo
 		"items":        jsonItemCount(endpoint, body),
 		"elapsedMs":    time.Since(started).Milliseconds(),
 	})
-	if len(body) > maxMetadataBytes {
-		return cachepkg.Response{}, errors.New("provider metadata exceeded 256 MiB cache limit")
-	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return cachepkg.Response{}, fmt.Errorf("provider returned HTTP %d", resp.StatusCode)
 	}
