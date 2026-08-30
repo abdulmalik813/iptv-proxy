@@ -1,6 +1,7 @@
 import crypto from 'crypto';
 import { getDb, initDatabase } from '../db';
 import type { IptvProviderUser } from '../db/schema';
+import { hashProviderPassword, isProviderPasswordHash } from '../auth/provider-password';
 import { LogService } from './log.service';
 
 const MASK = '••••••••';
@@ -18,11 +19,12 @@ export interface UpdateProviderUserInput {
 }
 
 function rowToUser(row: Record<string, unknown>, includeSensitive: boolean): IptvProviderUser {
+  const passwordHash = String(row.password_hash || '');
   return {
     id: String(row.id),
     provider_id: String(row.provider_id),
     username: String(row.username),
-    password: includeSensitive ? String(row.password) : MASK,
+    password_hash: includeSensitive ? passwordHash : MASK,
     enabled: Number(row.enabled ?? 1),
     created_at: String(row.created_at),
     updated_at: String(row.updated_at),
@@ -38,19 +40,18 @@ async function ensureProvider(providerId: string): Promise<{ id: string; name: s
   return { id: String(result.rows[0].id), name: String(result.rows[0].name) };
 }
 
-async function syncLegacyCredentials(providerId: string): Promise<void> {
+async function syncLegacyIdentity(providerId: string): Promise<void> {
   const result = await getDb().execute({
-    sql: `SELECT username, password FROM provider_users
+    sql: `SELECT username FROM provider_users
           WHERE provider_id = ?
           ORDER BY enabled DESC, created_at ASC, id ASC
           LIMIT 1`,
     args: [providerId],
   });
   const username = result.rows.length ? String(result.rows[0].username) : '';
-  const password = result.rows.length ? String(result.rows[0].password) : '';
   await getDb().execute({
-    sql: 'UPDATE iptv_providers SET local_username = ?, local_password = ?, updated_at = ? WHERE id = ?',
-    args: [username, password, new Date().toISOString(), providerId],
+    sql: "UPDATE iptv_providers SET local_username = ?, local_password = '', updated_at = ? WHERE id = ?",
+    args: [username, new Date().toISOString(), providerId],
   });
 }
 
@@ -87,12 +88,13 @@ export class ProviderUserService {
 
     const id = crypto.randomUUID();
     const now = new Date().toISOString();
+    const passwordHash = hashProviderPassword(password);
     await getDb().execute({
-      sql: `INSERT INTO provider_users (id, provider_id, username, password, enabled, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      args: [id, providerId, username, password, input.enabled === false ? 0 : 1, now, now],
+      sql: `INSERT INTO provider_users (id, provider_id, username, password, password_hash, enabled, created_at, updated_at)
+            VALUES (?, ?, ?, '', ?, ?, ?, ?)`,
+      args: [id, providerId, username, passwordHash, input.enabled === false ? 0 : 1, now, now],
     });
-    await syncLegacyCredentials(providerId);
+    await syncLegacyIdentity(providerId);
     await LogService.info('provider', 'user_creation', `Added client user "${username}" to provider "${provider.name}".`, {
       provider_id: providerId,
       provider_user_id: id,
@@ -118,13 +120,14 @@ export class ProviderUserService {
     const provider = await ensureProvider(providerId);
     const existing = await this.getUser(providerId, userId, true);
     if (!existing) throw new Error('Provider user not found.');
+    if (!isProviderPasswordHash(existing.password_hash)) throw new Error('Provider user password verifier is invalid.');
 
     const username = input.username !== undefined ? input.username.trim() : existing.username;
     if (!username) throw new Error('Username cannot be empty.');
     if (username.length > 512) throw new Error('Username is too long.');
-    const password = input.password !== undefined && input.password !== '' ? input.password : existing.password;
-    if (!password) throw new Error('Password cannot be empty.');
-    if (password.length > 4096) throw new Error('Password is too long.');
+    if (input.password !== undefined && input.password.length > 4096) throw new Error('Password is too long.');
+    const passwordChanged = input.password !== undefined && input.password !== '';
+    const passwordHash = passwordChanged ? hashProviderPassword(input.password as string) : existing.password_hash;
     const enabled = input.enabled !== undefined ? (input.enabled ? 1 : 0) : existing.enabled;
 
     const duplicate = await getDb().execute({
@@ -134,16 +137,16 @@ export class ProviderUserService {
     if (duplicate.rows.length) throw new Error(`User "${username}" already exists for this provider.`);
 
     await getDb().execute({
-      sql: 'UPDATE provider_users SET username = ?, password = ?, enabled = ?, updated_at = ? WHERE provider_id = ? AND id = ?',
-      args: [username, password, enabled, new Date().toISOString(), providerId, userId],
+      sql: "UPDATE provider_users SET username = ?, password = '', password_hash = ?, enabled = ?, updated_at = ? WHERE provider_id = ? AND id = ?",
+      args: [username, passwordHash, enabled, new Date().toISOString(), providerId, userId],
     });
-    await syncLegacyCredentials(providerId);
+    await syncLegacyIdentity(providerId);
     await LogService.info('provider', 'user_update', `Updated client user "${username}" for provider "${provider.name}".`, {
       provider_id: providerId,
       provider_user_id: userId,
       username,
       enabled: Boolean(enabled),
-      password_changed: input.password !== undefined && input.password !== '',
+      password_changed: passwordChanged,
     });
     const updated = await this.getUser(providerId, userId, false);
     if (!updated) throw new Error('Provider user was updated but could not be reloaded.');
@@ -159,7 +162,7 @@ export class ProviderUserService {
       sql: 'DELETE FROM provider_users WHERE provider_id = ? AND id = ?',
       args: [providerId, userId],
     });
-    await syncLegacyCredentials(providerId);
+    await syncLegacyIdentity(providerId);
     await LogService.warn('provider', 'user_deletion', `Removed client user "${existing.username}" from provider "${provider.name}".`, {
       provider_id: providerId,
       provider_user_id: userId,
