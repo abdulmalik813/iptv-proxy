@@ -255,11 +255,24 @@ func (h *Handler) LiveSnapshots() []stream.Snapshot {
 	return h.live.Snapshots()
 }
 
+func shouldStripRequestHeader(lower string) bool {
+	switch lower {
+	case "host", "connection", "proxy-connection", "transfer-encoding", "keep-alive", "upgrade",
+		"cookie", "authorization", "proxy-authorization", "forwarded", "via",
+		"x-forwarded-for", "x-forwarded-host", "x-forwarded-proto", "x-forwarded-port", "x-forwarded-client-cert",
+		"x-real-ip", "x-client-ip", "x-cluster-client-ip", "x-original-forwarded-for", "x-envoy-external-address",
+		"true-client-ip", "fastly-client-ip", "cf-connecting-ip", "cf-ipcountry", "cf-ray", "cf-visitor", "cdn-loop",
+		"x-iptv-trace-id":
+		return true
+	default:
+		return false
+	}
+}
+
 func copySafeRequestHeaders(dst, src http.Header) {
 	if src != nil {
 		for key, values := range src {
-			lower := strings.ToLower(key)
-			if lower == "host" || lower == "connection" || lower == "proxy-connection" || lower == "transfer-encoding" {
+			if shouldStripRequestHeader(strings.ToLower(key)) {
 				continue
 			}
 			for _, value := range values {
@@ -275,7 +288,7 @@ func copySafeRequestHeaders(dst, src http.Header) {
 func copyResponseHeaders(dst, src http.Header) {
 	for key, values := range src {
 		lower := strings.ToLower(key)
-		if lower == "connection" || lower == "transfer-encoding" || lower == "keep-alive" || lower == "proxy-authenticate" || lower == "proxy-authorization" || lower == "te" || lower == "trailers" || lower == "upgrade" {
+		if lower == "connection" || lower == "transfer-encoding" || lower == "keep-alive" || lower == "proxy-authenticate" || lower == "proxy-authorization" || lower == "te" || lower == "trailers" || lower == "upgrade" || lower == "set-cookie" || lower == "set-cookie2" {
 			continue
 		}
 		for _, value := range values {
