@@ -11,23 +11,30 @@ import (
 
 func TestReplaceM3ULogoAttributePreservesLine(t *testing.T) {
 	line := []byte(`#EXTINF:-1 tvg-id="abc" tvg-logo="https://provider.test/images/logo.png" group-title="News",Channel`)
-	line = bytes.ReplaceAll(line, []byte(`\"`), []byte(`"`))
+	// Raw string fixtures above keep this file easy to read in GitHub patches;
+	// normalize the escaped quotes to the actual M3U bytes under test.
+	line = bytes.ReplaceAll(line, []byte{'\\', '"'}, []byte{'"'})
 	rewrites := map[string]string{
 		"https://provider.test/images/logo.png": "https://proxy.test/p/_artwork/token",
 	}
 	got := replaceArtworkAttributeValues(line, m3uLogoDouble, rewrites)
 	text := string(got)
 	if !strings.Contains(text, `tvg-logo="https://proxy.test/p/_artwork/token"`) {
-		t.Fatalf("logo was not rewritten: %s", text)
+		// The assertion string is normalized for the same reason as the fixture.
+		want := strings.ReplaceAll(`tvg-logo=\"https://proxy.test/p/_artwork/token\"`, `\"`, `"`)
+		if !strings.Contains(text, want) {
+			t.Fatalf("logo was not rewritten: %s", text)
+		}
 	}
-	if !strings.Contains(text, `group-title="News",Channel`) {
+	wantGroup := strings.ReplaceAll(`group-title=\"News\",Channel`, `\"`, `"`)
+	if !strings.Contains(text, wantGroup) {
 		t.Fatalf("unrelated EXTINF data changed: %s", text)
 	}
 }
 
 func TestReplaceXMLTVIconOnlyTouchesIconSrc(t *testing.T) {
 	body := []byte(`<tv><channel id="a"><icon src="https://provider.test/logo.png"/><display-name>One</display-name></channel><programme channel="a"><icon src='https://provider.test/show.jpg'/></programme></tv>`)
-	body = bytes.ReplaceAll(body, []byte(`\"`), []byte(`"`))
+	body = bytes.ReplaceAll(body, []byte{'\\', '"'}, []byte{'"'})
 	rewrites := map[string]string{
 		"https://provider.test/logo.png": "https://proxy.test/p/_artwork/channel",
 		"https://provider.test/show.jpg":  "https://proxy.test/p/_artwork/show",
@@ -38,14 +45,15 @@ func TestReplaceXMLTVIconOnlyTouchesIconSrc(t *testing.T) {
 		return tag
 	})
 	text := string(got)
-	if !strings.Contains(text, `src="https://proxy.test/p/_artwork/channel"`) || !strings.Contains(text, `src='https://proxy.test/p/_artwork/show'`) {
+	wantChannel := strings.ReplaceAll(`src=\"https://proxy.test/p/_artwork/channel\"`, `\"`, `"`)
+	if !strings.Contains(text, wantChannel) || !strings.Contains(text, `src='https://proxy.test/p/_artwork/show'`) {
 		t.Fatalf("XMLTV artwork not rewritten: %s", text)
 	}
 }
 
 func TestJSONArtworkRewritePreservesNumbers(t *testing.T) {
 	body := []byte(`[{"stream_id":1234567890123456789,"stream_icon":"https://provider.test/live.png","nested":{"backdrop_path":["https://provider.test/a.jpg"]}}]`)
-	body = bytes.ReplaceAll(body, []byte(`\"`), []byte(`"`))
+	body = bytes.ReplaceAll(body, []byte{'\\', '"'}, []byte{'"'})
 	decoder := json.NewDecoder(bytes.NewReader(body))
 	decoder.UseNumber()
 	var value any
@@ -63,9 +71,14 @@ func TestJSONArtworkRewritePreservesNumbers(t *testing.T) {
 	}
 	text := string(encoded)
 	if !strings.Contains(text, `"stream_id":1234567890123456789`) {
-		t.Fatalf("numeric ID changed during JSON rewrite: %s", text)
+		want := strings.ReplaceAll(`\"stream_id\":1234567890123456789`, `\"`, `"`)
+		if !strings.Contains(text, want) {
+			t.Fatalf("numeric ID changed during JSON rewrite: %s", text)
+		}
 	}
-	if !strings.Contains(text, `"stream_icon":"https://proxy.test/p/_artwork/live"`) || !strings.Contains(text, `"backdrop_path":["https://proxy.test/p/_artwork/a"]`) {
+	wantIcon := strings.ReplaceAll(`\"stream_icon\":\"https://proxy.test/p/_artwork/live\"`, `\"`, `"`)
+	wantBackdrop := strings.ReplaceAll(`\"backdrop_path\":[\"https://proxy.test/p/_artwork/a\"]`, `\"`, `"`)
+	if !strings.Contains(text, wantIcon) || !strings.Contains(text, wantBackdrop) {
 		t.Fatalf("JSON artwork not rewritten: %s", text)
 	}
 }
