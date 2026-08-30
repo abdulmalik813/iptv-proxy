@@ -21,4 +21,27 @@ if command -v warp-svc >/dev/null 2>&1; then
   fi
 fi
 
-exec node server.js
+# Next.js and the Go streaming core intentionally run in this same container.
+# This guarantees both processes use the exact same WireGuard/OpenVPN/WARP
+# interfaces and routing table without Docker network_mode conflicts in Dokploy.
+/usr/local/bin/iptv-go-proxy >/tmp/iptv-go-proxy.log 2>&1 &
+GO_PID=$!
+
+node server.js &
+NEXT_PID=$!
+
+shutdown() {
+  kill -TERM "$NEXT_PID" "$GO_PID" 2>/dev/null || true
+  wait "$NEXT_PID" 2>/dev/null || true
+  wait "$GO_PID" 2>/dev/null || true
+}
+
+trap shutdown INT TERM
+
+# Keep the container lifetime tied to Next.js. The combined healthcheck also
+# marks the service unhealthy if the Go process or port 8080 stops responding.
+wait "$NEXT_PID"
+NEXT_STATUS=$?
+kill -TERM "$GO_PID" 2>/dev/null || true
+wait "$GO_PID" 2>/dev/null || true
+exit "$NEXT_STATUS"
