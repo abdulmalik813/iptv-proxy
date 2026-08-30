@@ -17,6 +17,8 @@ type AuthPayload = {
   error?: string;
 };
 
+const brandLogoPath = `${process.env.NEXT_PUBLIC_UI_BASE_PATH || ''}/iptv-proxy-logo.png`;
+
 export default function LoginPage() {
   const router = useRouter();
   const [isSetup, setIsSetup] = React.useState(false);
@@ -93,12 +95,8 @@ export default function LoginPage() {
   return (
     <div className="grid min-h-screen place-items-center bg-muted/20 p-4 sm:p-6">
       <div className="w-full max-w-sm">
-        <div className="mb-6 flex items-center justify-center gap-3">
-          <div className="grid size-10 place-items-center rounded-xl bg-primary text-sm font-bold text-primary-foreground">IP</div>
-          <div>
-            <div className="font-semibold">IPTV Proxy</div>
-            <div className="text-xs text-muted-foreground">Administration</div>
-          </div>
+        <div className="mb-6 flex justify-center">
+          <img src={brandLogoPath} alt="IPTV Proxy" className="h-auto w-full max-w-[260px] object-contain" width={600} height={200} />
         </div>
 
         <Card>
