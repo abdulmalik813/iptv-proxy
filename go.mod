@@ -1,3 +1,3 @@
 module github.com/abdulmalik813/iptv-proxy
 
-go 1.19
+go 1.27
