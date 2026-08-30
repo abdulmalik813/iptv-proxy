@@ -1,1 +1,5 @@
 minimumReleaseAge: 0
+
+onlyBuiltDependencies:
+  - '@tailwindcss/oxide'
+  - 'unrs-resolver'
