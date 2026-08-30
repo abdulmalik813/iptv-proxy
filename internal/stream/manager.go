@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -136,6 +137,14 @@ func (s *Session) Header() http.Header {
 	return s.response.Header.Clone()
 }
 
+func (s *Session) ResponseURL() *url.URL {
+	if s.response == nil || s.response.Request == nil || s.response.Request.URL == nil {
+		return nil
+	}
+	copied := *s.response.Request.URL
+	return &copied
+}
+
 func (s *Session) run(open OpenFunc) {
 	resp, err := open(s.ctx)
 	if err != nil {
@@ -257,13 +266,27 @@ func (s *Session) cancelIfEmpty() {
 }
 
 func (v *Viewer) Next(ctx context.Context) ([]byte, error) {
+	// A session can close immediately after enqueueing its final chunk. Drain
+	// already-buffered bytes before reporting EOF so finite/mislabeled HLS
+	// responses and short TS bursts are never truncated at stream shutdown.
+	select {
+	case chunk := <-v.queue:
+		return chunk, nil
+	default:
+	}
+
 	select {
 	case <-ctx.Done():
 		return nil, ctx.Err()
-	case <-v.closed:
-		return nil, io.EOF
 	case chunk := <-v.queue:
 		return chunk, nil
+	case <-v.closed:
+		select {
+		case chunk := <-v.queue:
+			return chunk, nil
+		default:
+			return nil, io.EOF
+		}
 	}
 }
 
