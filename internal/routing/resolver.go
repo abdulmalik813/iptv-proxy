@@ -29,6 +29,19 @@ func NewResolver(registry *provider.Registry) *Resolver {
 	return &Resolver{registry: registry}
 }
 
+func (r *Resolver) ProviderByID(ctx context.Context, id string) (provider.Provider, error) {
+	providers, err := r.registry.Snapshot(ctx)
+	if err != nil {
+		return provider.Provider{}, err
+	}
+	for _, p := range providers {
+		if p.ID == id {
+			return p, nil
+		}
+	}
+	return provider.Provider{}, errors.New("IPTV provider for cached entry is unavailable")
+}
+
 func (r *Resolver) Resolve(ctx context.Context, requestPath string) (Resolved, error) {
 	providers, err := r.registry.Snapshot(ctx)
 	if err != nil {
