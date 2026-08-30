@@ -56,11 +56,25 @@ func main() {
 	resolver := routing.NewResolver(registry)
 	cacheManager := cachepkg.NewManager(redisClient)
 	traceLogger := proxylog.New(uiURL, internalToken)
+	cacheManager.SetEventSink(func(event cachepkg.Event) {
+		metadata := map[string]any{
+			"operation":   event.Operation,
+			"operationId": event.OperationID,
+			"cacheKey":    event.Key,
+			"providerId":  event.Descriptor.ProviderID,
+			"endpoint":    event.Descriptor.Endpoint,
+			"action":      event.Descriptor.Action(),
+		}
+		if event.Error != "" {
+			metadata["error"] = event.Error
+		}
+		traceLogger.Write(event.Level, event.Category, event.Message, metadata)
+	})
 	iptvHandler := proxycore.NewHandler(resolver, cacheManager, redisClient, traceLogger, appURL)
 
-	rehydrateCtx, rehydrateCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	rehydrateCtx, rehydrateCancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	if count, err := iptvHandler.RehydratePersistedCache(rehydrateCtx); err != nil {
-		log.Printf("persisted cache rehydration failed: %v", err)
+		log.Printf("persisted cache rehydration restored %d entries with warnings: %v", count, err)
 	} else {
 		log.Printf("rehydrated %d persisted IPTV cache fetch jobs", count)
 	}
