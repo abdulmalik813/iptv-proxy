@@ -108,6 +108,7 @@ export function TopBar({ onToggleMobile }: TopBarProps) {
   const location = network?.location || network?.country || 'Unknown location';
   const outboundIp = network?.ip || 'IP unavailable';
   const liveViewers = system?.go.viewers || 0;
+  const vpnLabel = vpn?.profileName || vpn?.type || 'VPN';
 
   return (
     <header id="app-topbar" className="sticky top-0 z-40 border-b bg-background/90 backdrop-blur supports-[backdrop-filter]:bg-background/75">
@@ -143,7 +144,7 @@ export function TopBar({ onToggleMobile }: TopBarProps) {
             <Shield className="size-4" />
             <span className="hidden sm:inline">
               {vpnStatus === 'connected'
-                ? vpn?.profileName || vpn.type
+                ? vpnLabel
                 : vpnStatus === 'connecting'
                   ? 'Connecting'
                   : vpnStatus === 'error'
