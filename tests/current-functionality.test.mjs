@@ -169,17 +169,25 @@ test('Go proxy is available in development and production images with placeholde
   assert.match(goMod, /module github\.com\/abdulmalik813\/iptv-reverse-proxy/);
 });
 
-test('Go proxy shares the admin network namespace so VPN routing applies to Go egress', async () => {
+test('Next.js and Go run in one container so they always share VPN routing', async () => {
+  const entrypoint = await source('docker/entrypoint.sh');
+  assert.match(entrypoint, /\/usr\/local\/bin\/iptv-go-proxy/);
+  assert.match(entrypoint, /node server\.js/);
+  assert.match(entrypoint, /GO_PID=/);
+  assert.match(entrypoint, /NEXT_PID=/);
+
   for (const composePath of ['docker-compose.yml', 'docker-compose.dokploy.yml']) {
     const compose = await source(composePath);
-    assert.match(compose, /iptv-go-proxy:/);
-    assert.match(compose, /network_mode: "service:iptv-proxy-admin"/);
     assert.match(compose, /GO_PROXY_ADDR: :8080/);
     assert.match(compose, /http:\/\/127\.0\.0\.1:8080\/health/);
+    assert.doesNotMatch(compose, /iptv-go-proxy:/);
+    assert.doesNotMatch(compose, /network_mode:/);
   }
+
   const dokploy = await source('docker-compose.dokploy.yml');
+  assert.match(dokploy, /UI_URL: \$\{UI_URL:\?UI_URL is required\}/);
+  assert.match(dokploy, /APP_URL: \$\{APP_URL:\?APP_URL is required\}/);
   assert.match(dokploy, /dokploy-network:/);
-  assert.match(dokploy, /iptv-internal:/);
 });
 
 test('Core management API routes exist', async () => {
