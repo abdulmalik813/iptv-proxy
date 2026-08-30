@@ -49,6 +49,8 @@ test('cache design contract documents the production invariants and scenario tar
   assert.match(design, /keep old -> fetch new -> validate -> atomically publish new/);
   assert.match(design, /at least 100 sub-scenarios/);
   assert.match(design, /Live streams, VOD\/series media bytes, HLS segments/);
+  assert.match(design, /reader lease/);
+  assert.match(design, /last reader releases/);
 });
 
 test('cache manager has one replacement lifecycle and fail-closed cold misses', async () => {
@@ -127,24 +129,35 @@ test('refresh all creates missing heavy caches and replaces existing ones', asyn
   assert.match(page, /Refresh all cache/);
   assert.doesNotMatch(page, /Start pull/);
   assert.doesNotMatch(page, /Repull all/);
-  assert.match(page, /Recent cache activity/);
+  assert.doesNotMatch(page, /Recent cache activity/);
+  assert.match(page, /Active readers/);
+  assert.match(page, /Retiring generations/);
 });
 
-test('automatic and individual refresh use immutable zero-downtime generations', async () => {
+test('automatic and individual refresh use reader-aware zero-downtime generations', async () => {
   const cache = compact(await source('internal/cache/manager.go'));
+  const cacheProxy = await source('internal/proxy/cache_proxy.go');
+  const scenarios = await source('internal/cache/manager_test.go');
   const page = await source('app/cache/page.tsx');
   const route = await source('app/api/system/cache/route.ts');
   assert.match(cache, /func \(m \*Manager\) Purge\(/);
   assert.match(cache, /return m\.replaceNow\(ctx, key, "purge"\)/);
   assert.match(cache, /replaceWithSpec\(ctx, spec, "refresh"\)/);
   assert.match(cache, /stagingGenerationTTL/);
-  assert.match(cache, /retiredGenerationGrace\s*=\s*30 \* time\.Second/);
+  assert.match(cache, /retiredGenerationFallbackTTL\s*=\s*time\.Hour/);
+  assert.match(cache, /generationLeaseKey/);
+  assert.match(cache, /releaseGenerationReader/);
+  assert.match(cache, /cache\.generation\.waiting/);
+  assert.match(cache, /cache\.generation\.cleaned/);
   assert.match(cache, /publishGenerationScript/);
   assert.match(cache, /PERSIST/);
-  assert.match(cache, /retireGeneration/);
+  assert.match(cacheProxy, /defer response\.Release\(\)/);
+  assert.match(scenarios, /TestPublishedGenerationDeletesPreviousGenerationImmediatelyWithoutReaders/);
+  assert.match(scenarios, /TestPublishedGenerationWaitsForActiveReaderBeforeDeletingPreviousGeneration/);
+  assert.doesNotMatch(cache, /retiredGenerationGrace/);
   assert.doesNotMatch(cache, /func \(m \*Manager\) RefreshNow/);
   assert.match(page, /method: 'DELETE'/);
-  assert.match(page, /Fresh provider data was validated and published for this cache entry/);
+  assert.match(page, /previous generation/);
   assert.match(route, /Cache key is required for a single-entry refresh/);
 });
 
@@ -155,15 +168,54 @@ test('non-empty cached catalogs are protected from transient empty replacements'
   assert.match(cache, /fresh\.ItemCount == 0/);
 });
 
-test('cache lifecycle operations are observable through the existing proxy log channel', async () => {
+test('cache lifecycle operations are observable through the unified proxy log channel', async () => {
   const cache = await source('internal/cache/manager.go');
   const main = await source('cmd/proxy/main.go');
   assert.match(cache, /type Event struct/);
   assert.match(cache, /cache\.fill\.start/);
   assert.match(cache, /cache\.fill\.published/);
-  assert.match(cache, /lock_busy/);
+  assert.match(cache, /cache\.generation\.waiting/);
+  assert.match(cache, /cache\.generation\.cleaned/);
+  assert.match(cache, /ActiveReaders/);
   assert.match(main, /SetEventSink/);
   assert.match(main, /operationId/);
+  assert.match(main, /activeReaders/);
+  assert.match(main, /generation/);
+});
+
+test('one categorized logs console correlates full IPTV request traffic', async () => {
+  const page = await source('app/logs/page.tsx');
+  const cachePage = await source('app/cache/page.tsx');
+  const route = await source('app/api/logs/route.ts');
+  const service = await source('lib/services/log.service.ts');
+  const client = await source('internal/logging/client.go');
+  const handler = await source('internal/proxy/handler.go');
+  const direct = await source('internal/proxy/direct_proxy.go');
+
+  assert.match(page, /Unified console/);
+  assert.match(page, /Request traffic/);
+  assert.match(page, /CLIENT → PROXY/);
+  assert.match(page, /PROXY → PROVIDER/);
+  assert.match(page, /PROVIDER → PROXY/);
+  assert.match(page, /PROXY → CLIENT/);
+  assert.match(page, /Show complete request trace/);
+  assert.match(page, /traceId/);
+  assert.doesNotMatch(cachePage, /Recent cache activity/);
+
+  assert.match(route, /ALLOWED_GROUPS/);
+  assert.match(route, /group/);
+  assert.match(service, /addGroupCondition/);
+  assert.match(service, /traffic/);
+  assert.match(service, /cache/);
+  assert.match(service, /streams/);
+  assert.match(service, /vpn/);
+
+  assert.match(client, /queue\s+chan entry/);
+  assert.match(client, /go client\.run\(\)/);
+  assert.match(handler, /request\.received/);
+  assert.match(handler, /request\.completed/);
+  assert.match(direct, /upstream\.request/);
+  assert.match(direct, /upstream\.response/);
 });
 
 test('Redis-backed Go test suite executes a matrix of 100 cache scenarios', async () => {

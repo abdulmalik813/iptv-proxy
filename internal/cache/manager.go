@@ -20,12 +20,12 @@ import (
 )
 
 const (
-	refreshThreshold       = 0.30
-	bodyChunkSize          = 8 * 1024 * 1024
-	fetchTimeout           = 10 * time.Minute
-	lockTTL                = 12 * time.Minute
-	stagingGenerationTTL   = 2 * time.Hour
-	retiredGenerationGrace = 30 * time.Second
+	refreshThreshold             = 0.30
+	bodyChunkSize                = 8 * 1024 * 1024
+	fetchTimeout                 = 10 * time.Minute
+	lockTTL                      = 12 * time.Minute
+	stagingGenerationTTL         = 2 * time.Hour
+	retiredGenerationFallbackTTL = time.Hour
 )
 
 var (
@@ -60,6 +60,19 @@ type Response struct {
 	Body           []byte
 	ItemCount      int
 	ItemCountKnown bool
+	release        func()
+}
+
+// Release finishes this request's lease on the cache generation. Cached HTTP
+// handlers must defer Release so a generation that was replaced while a client
+// was still using it is removed only after that request has finished.
+func (r *Response) Release() {
+	if r == nil || r.release == nil {
+		return
+	}
+	release := r.release
+	r.release = nil
+	release()
 }
 
 type Descriptor struct {
@@ -121,6 +134,13 @@ type manifest struct {
 	ChunkCount  int
 }
 
+type retiredGeneration struct {
+	Key        string
+	Generation string
+	ChunkCount int
+	Descriptor Descriptor
+}
+
 type Entry struct {
 	Key               string     `json:"key"`
 	Status            int        `json:"status"`
@@ -133,40 +153,49 @@ type Entry struct {
 	Descriptor        Descriptor `json:"descriptor"`
 	ItemCount         int        `json:"itemCount,omitempty"`
 	ItemCountKnown    bool       `json:"itemCountKnown,omitempty"`
+	ActiveReaders     int        `json:"activeReaders"`
 }
 
 type Stats struct {
 	Entries             int   `json:"entries"`
 	Bytes               int64 `json:"bytes"`
 	RegisteredRefreshes int   `json:"registeredRefreshes"`
+	ActiveReaders       int   `json:"activeReaders"`
+	RetiredGenerations  int   `json:"retiredGenerations"`
 }
 
 type Event struct {
-	Level       string
-	Category    string
-	Message     string
-	Operation   string
-	OperationID string
-	Key         string
-	Descriptor  Descriptor
-	Error       string
+	Level         string
+	Category      string
+	Message       string
+	Operation     string
+	OperationID   string
+	Key           string
+	Descriptor    Descriptor
+	Generation    string
+	ActiveReaders int
+	Error         string
 }
 
 type EventSink func(Event)
 
 type Manager struct {
-	client *redis.Client
-	mu     sync.Mutex
-	timers map[string]*time.Timer
-	specs  map[string]fetchSpec
-	sink   EventSink
+	client  *redis.Client
+	mu      sync.Mutex
+	timers  map[string]*time.Timer
+	specs   map[string]fetchSpec
+	readers map[string]int
+	retired map[string]retiredGeneration
+	sink    EventSink
 }
 
 func NewManager(client *redis.Client) *Manager {
 	return &Manager{
-		client: client,
-		timers: make(map[string]*time.Timer),
-		specs:  make(map[string]fetchSpec),
+		client:  client,
+		timers:  make(map[string]*time.Timer),
+		specs:   make(map[string]fetchSpec),
+		readers: make(map[string]int),
+		retired: make(map[string]retiredGeneration),
 	}
 }
 
@@ -472,6 +501,10 @@ func (m *Manager) Entries(ctx context.Context) ([]Entry, error) {
 			}
 			m.mu.Lock()
 			_, registered := m.specs[key]
+			activeReaders := 0
+			if currentManifest.Generation != "" {
+				activeReaders = m.readers[generationLeaseKey(key, currentManifest.Generation)]
+			}
 			m.mu.Unlock()
 			out = append(out, Entry{
 				Key:               key,
@@ -485,6 +518,7 @@ func (m *Manager) Entries(ctx context.Context) ([]Entry, error) {
 				Descriptor:        currentManifest.Descriptor,
 				ItemCount:         currentManifest.Meta.ItemCount,
 				ItemCountKnown:    currentManifest.Meta.ItemCountKnown,
+				ActiveReaders:     activeReaders,
 			})
 		}
 		cursor = next
@@ -507,15 +541,41 @@ func (m *Manager) Stats(ctx context.Context) (Stats, error) {
 	}
 	m.mu.Lock()
 	registered := len(m.specs)
+	activeReaders := 0
+	for _, count := range m.readers {
+		activeReaders += count
+	}
+	retired := len(m.retired)
 	m.mu.Unlock()
-	return Stats{Entries: len(entries), Bytes: storedBytes, RegisteredRefreshes: registered}, nil
+	return Stats{
+		Entries:             len(entries),
+		Bytes:               storedBytes,
+		RegisteredRefreshes: registered,
+		ActiveReaders:       activeReaders,
+		RetiredGenerations:  retired,
+	}, nil
 }
 
 func (m *Manager) get(ctx context.Context, key string) (Response, manifest, bool, error) {
+	// Pin the selected manifest while holding the same mutex used by publish's
+	// atomic generation switch. A refresh therefore cannot retire a generation
+	// between manifest selection and reader registration.
+	m.mu.Lock()
 	currentManifest, found, err := m.loadManifest(ctx, key)
 	if err != nil || !found {
+		m.mu.Unlock()
 		return Response{}, currentManifest, found, err
 	}
+	var release func()
+	if currentManifest.Generation != "" && currentManifest.ChunkCount > 0 {
+		leaseKey := generationLeaseKey(key, currentManifest.Generation)
+		m.readers[leaseKey]++
+		var once sync.Once
+		release = func() {
+			once.Do(func() { m.releaseGenerationReader(key, currentManifest.Generation) })
+		}
+	}
+	m.mu.Unlock()
 
 	var body []byte
 	if currentManifest.Generation == "" || currentManifest.ChunkCount == 0 {
@@ -529,6 +589,9 @@ func (m *Manager) get(ctx context.Context, key string) (Response, manifest, bool
 	} else {
 		body, err = m.readGeneration(ctx, key, currentManifest.Generation, currentManifest.ChunkCount, currentManifest.Meta.SizeBytes)
 		if err != nil {
+			if release != nil {
+				release()
+			}
 			return Response{}, currentManifest, false, err
 		}
 	}
@@ -539,6 +602,7 @@ func (m *Manager) get(ctx context.Context, key string) (Response, manifest, bool
 		Body:           body,
 		ItemCount:      currentManifest.Meta.ItemCount,
 		ItemCountKnown: currentManifest.Meta.ItemCountKnown,
+		release:        release,
 	}, currentManifest, true, nil
 }
 
@@ -614,7 +678,15 @@ func (m *Manager) publish(ctx context.Context, spec Spec, response Response, old
 	for i := 0; i < chunkCount; i++ {
 		keys = append(keys, bodyKey(spec.Key, generation, i))
 	}
-	if _, err = publishGenerationScript.Run(
+
+	var oldCleanup retiredGeneration
+	var oldWaiting retiredGeneration
+	var waitingReaders int
+	// Serialize the Redis pointer swap with cached-reader registration. New
+	// requests either pin the old generation before this switch or see the new
+	// generation after it; there is no untracked middle state.
+	m.mu.Lock()
+	_, err = publishGenerationScript.Run(
 		ctx,
 		m.client,
 		keys,
@@ -624,13 +696,55 @@ func (m *Manager) publish(ctx context.Context, spec Spec, response Response, old
 		string(descriptorJSON),
 		generation,
 		chunkCount,
-	).Result(); err != nil {
+	).Result()
+	if err == nil && oldFound && oldManifest.Generation != "" && oldManifest.Generation != generation && oldManifest.ChunkCount > 0 {
+		retired := retiredGeneration{
+			Key:        spec.Key,
+			Generation: oldManifest.Generation,
+			ChunkCount: oldManifest.ChunkCount,
+			Descriptor: spec.Descriptor,
+		}
+		leaseKey := generationLeaseKey(spec.Key, oldManifest.Generation)
+		waitingReaders = m.readers[leaseKey]
+		if waitingReaders > 0 {
+			m.retired[leaseKey] = retired
+			oldWaiting = retired
+		} else {
+			oldCleanup = retired
+		}
+	}
+	m.mu.Unlock()
+	if err != nil {
 		return err
 	}
 	cleanupNew = false
 
-	if oldFound && oldManifest.Generation != "" && oldManifest.Generation != generation && oldManifest.ChunkCount > 0 {
-		m.retireGeneration(context.Background(), spec.Key, oldManifest.Generation, oldManifest.ChunkCount)
+	if oldWaiting.Generation != "" {
+		m.expireGenerationFallback(context.Background(), oldWaiting.Key, oldWaiting.Generation, oldWaiting.ChunkCount)
+		m.emit(Event{
+			Level:         "info",
+			Category:      "cache.generation.waiting",
+			Message:       "Old cache generation is waiting for active requests to finish",
+			Operation:     "retire",
+			OperationID:   generation,
+			Key:           oldWaiting.Key,
+			Descriptor:    oldWaiting.Descriptor,
+			Generation:    oldWaiting.Generation,
+			ActiveReaders: waitingReaders,
+		})
+	}
+	if oldCleanup.Generation != "" {
+		m.cleanupGeneration(context.Background(), oldCleanup.Key, oldCleanup.Generation, oldCleanup.ChunkCount)
+		m.emit(Event{
+			Level:       "debug",
+			Category:    "cache.generation.cleaned",
+			Message:     "Unused old cache generation was removed after the atomic swap",
+			Operation:   "retire",
+			OperationID: generation,
+			Key:         oldCleanup.Key,
+			Descriptor:  oldCleanup.Descriptor,
+			Generation:  oldCleanup.Generation,
+		})
 	}
 	return nil
 }
@@ -669,12 +783,64 @@ func (m *Manager) readGeneration(ctx context.Context, key, generation string, ch
 	return buffer.Bytes(), nil
 }
 
-func (m *Manager) retireGeneration(ctx context.Context, key, generation string, chunkCount int) {
+func generationLeaseKey(key, generation string) string {
+	return key + "\x00" + generation
+}
+
+func (m *Manager) retireGeneration(ctx context.Context, key, generation string, chunkCount int, descriptor Descriptor) {
 	if generation == "" || chunkCount <= 0 {
 		return
 	}
+	retired := retiredGeneration{Key: key, Generation: generation, ChunkCount: chunkCount, Descriptor: descriptor}
+	leaseKey := generationLeaseKey(key, generation)
+	m.mu.Lock()
+	activeReaders := m.readers[leaseKey]
+	if activeReaders > 0 {
+		m.retired[leaseKey] = retired
+	}
+	m.mu.Unlock()
+	if activeReaders > 0 {
+		m.expireGenerationFallback(ctx, key, generation, chunkCount)
+		return
+	}
+	m.cleanupGeneration(ctx, key, generation, chunkCount)
+}
+
+func (m *Manager) releaseGenerationReader(key, generation string) {
+	leaseKey := generationLeaseKey(key, generation)
+	var retired retiredGeneration
+	var shouldCleanup bool
+	m.mu.Lock()
+	if count := m.readers[leaseKey]; count > 1 {
+		m.readers[leaseKey] = count - 1
+	} else {
+		delete(m.readers, leaseKey)
+		if pending, ok := m.retired[leaseKey]; ok {
+			retired = pending
+			delete(m.retired, leaseKey)
+			shouldCleanup = true
+		}
+	}
+	m.mu.Unlock()
+	if !shouldCleanup {
+		return
+	}
+	m.cleanupGeneration(context.Background(), retired.Key, retired.Generation, retired.ChunkCount)
+	m.emit(Event{
+		Level:       "info",
+		Category:    "cache.generation.cleaned",
+		Message:     "Old cache generation was removed after its last active request finished",
+		Operation:   "retire",
+		OperationID: retired.Generation,
+		Key:         retired.Key,
+		Descriptor:  retired.Descriptor,
+		Generation:  retired.Generation,
+	})
+}
+
+func (m *Manager) expireGenerationFallback(ctx context.Context, key, generation string, chunkCount int) {
 	for i := 0; i < chunkCount; i++ {
-		_ = m.client.Expire(ctx, bodyKey(key, generation, i), retiredGenerationGrace).Err()
+		_ = m.client.Expire(ctx, bodyKey(key, generation, i), retiredGenerationFallbackTTL).Err()
 	}
 }
 

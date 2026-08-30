@@ -98,6 +98,7 @@ func TestCacheScenarioMatrixRunsAtLeast100Scenarios(t *testing.T) {
 					if !bytes.Equal(got.Body, body) || !got.ItemCountKnown || got.ItemCount != 1 {
 						t.Fatalf("unexpected cached response: %+v", got)
 					}
+					got.Release()
 
 					err = manager.Purge(context.Background(), spec.normalized().Key)
 					if err != nil {
@@ -134,6 +135,7 @@ func TestMissingCacheFailsClosedThenBackgroundFills(t *testing.T) {
 	for time.Now().Before(deadline) {
 		response, hit, err := manager.GetOrFetch(context.Background(), spec)
 		if err == nil && hit && string(response.Body) == `[{"id":1}]` {
+			response.Release()
 			if fetches.Load() != 1 {
 				t.Fatalf("expected one background fetch, got %d", fetches.Load())
 			}
@@ -159,6 +161,7 @@ func TestDisabledCacheBypassesRedis(t *testing.T) {
 	if err != nil || hit || string(response.Body) != "direct" || fetches.Load() != 1 {
 		t.Fatalf("unexpected bypass result: response=%q hit=%v fetches=%d err=%v", response.Body, hit, fetches.Load(), err)
 	}
+	response.Release()
 	if exists := client.Exists(context.Background(), spec.normalized().Key).Val(); exists != 0 {
 		t.Fatal("disabled cache should not create a Redis manifest")
 	}
@@ -188,6 +191,7 @@ func TestNonEmptyCatalogRejectsEmptyReplacement(t *testing.T) {
 	if err != nil || !bytes.Equal(response.Body, body) {
 		t.Fatalf("old non-empty cache was not preserved: %q err=%v", response.Body, err)
 	}
+	response.Release()
 }
 
 func TestProviderFailurePreservesActiveGeneration(t *testing.T) {
@@ -213,6 +217,7 @@ func TestProviderFailurePreservesActiveGeneration(t *testing.T) {
 	if err != nil || string(response.Body) != "stable" {
 		t.Fatalf("active generation changed after failed refresh: %q err=%v", response.Body, err)
 	}
+	response.Release()
 }
 
 func TestLargeBodyUsesMultipleChunksAndRoundTrips(t *testing.T) {
@@ -239,6 +244,7 @@ func TestLargeBodyUsesMultipleChunksAndRoundTrips(t *testing.T) {
 	if err != nil || !bytes.Equal(response.Body, body) {
 		t.Fatalf("large body did not round trip: len=%d err=%v", len(response.Body), err)
 	}
+	response.Release()
 	entries, err := manager.Entries(context.Background())
 	if err != nil || len(entries) != 1 || entries[0].SizeBytes != int64(len(body)) {
 		t.Fatalf("metadata size mismatch: entries=%+v err=%v", entries, err)
@@ -330,6 +336,7 @@ func TestLegacyMigrationPublishesCanonicalEntryBeforeDeletingDuplicate(t *testin
 	if err != nil || string(response.Body) != `[{"id":9}]` {
 		t.Fatalf("legacy value did not migrate: %q err=%v", response.Body, err)
 	}
+	response.Release()
 }
 
 func TestCacheLifecycleEventsAreEmitted(t *testing.T) {
@@ -353,7 +360,48 @@ func TestCacheLifecycleEventsAreEmitted(t *testing.T) {
 	}
 }
 
-func TestPublishedGenerationSwitchKeepsPreviousGenerationDuringGrace(t *testing.T) {
+func TestPublishedGenerationDeletesPreviousGenerationImmediatelyWithoutReaders(t *testing.T) {
+	client := testRedis(t)
+	manager := NewManager(client)
+	defer stopManager(manager)
+	ctx := context.Background()
+
+	var version atomic.Int32
+	version.Store(1)
+	spec := testSpec("generation-swap-no-readers", "get_vod_streams", "", func(context.Context) (Response, error) {
+		return Response{Status: 200, Body: []byte(fmt.Sprintf("version-%d", version.Load())), ItemCount: 1, ItemCountKnown: true}, nil
+	})
+	if err := manager.Warm(ctx, spec); err != nil {
+		t.Fatal(err)
+	}
+	key := spec.normalized().Key
+	oldManifest, found, err := manager.loadManifest(ctx, key)
+	if err != nil || !found || oldManifest.Generation == "" {
+		t.Fatalf("old generation unavailable: found=%v generation=%q err=%v", found, oldManifest.Generation, err)
+	}
+	oldChunk := bodyKey(key, oldManifest.Generation, 0)
+
+	version.Store(2)
+	if err := manager.Purge(ctx, key); err != nil {
+		t.Fatal(err)
+	}
+	newManifest, found, err := manager.loadManifest(ctx, key)
+	if err != nil || !found || newManifest.Generation == oldManifest.Generation {
+		t.Fatalf("generation pointer did not switch: old=%q new=%q found=%v err=%v", oldManifest.Generation, newManifest.Generation, found, err)
+	}
+	if exists := client.Exists(ctx, oldChunk).Val(); exists != 0 {
+		t.Fatal("unused previous generation should be deleted immediately after pointer switch")
+	}
+	stats, err := manager.Stats(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.ActiveReaders != 0 || stats.RetiredGenerations != 0 {
+		t.Fatalf("unexpected retirement state without readers: %+v", stats)
+	}
+}
+
+func TestPublishedGenerationWaitsForActiveReaderBeforeDeletingPreviousGeneration(t *testing.T) {
 	client := testRedis(t)
 	manager := NewManager(client)
 	defer stopManager(manager)
@@ -363,7 +411,7 @@ func TestPublishedGenerationSwitchKeepsPreviousGenerationDuringGrace(t *testing.
 	version.Store(1)
 	body1 := bytes.Repeat([]byte("old-cache-"), bodyChunkSize/10+2)
 	body2 := bytes.Repeat([]byte("new-cache-"), bodyChunkSize/10+2)
-	spec := testSpec("generation-swap", "get_vod_streams", "", func(context.Context) (Response, error) {
+	spec := testSpec("generation-swap-reader", "get_vod_streams", "", func(context.Context) (Response, error) {
 		if version.Load() == 1 {
 			return Response{Status: 200, Body: body1, ItemCount: 1, ItemCountKnown: true}, nil
 		}
@@ -378,8 +426,10 @@ func TestPublishedGenerationSwitchKeepsPreviousGenerationDuringGrace(t *testing.
 		t.Fatalf("old generation unavailable: found=%v generation=%q err=%v", found, oldManifest.Generation, err)
 	}
 	oldChunk := bodyKey(key, oldManifest.Generation, 0)
-	if ttl := client.TTL(ctx, oldChunk).Val(); ttl != -1 {
-		t.Fatalf("active generation must be persistent, TTL=%v", ttl)
+
+	oldResponse, hit, err := manager.GetOrFetch(ctx, spec)
+	if err != nil || !hit || !bytes.Equal(oldResponse.Body, body1) {
+		t.Fatalf("old generation could not be leased: hit=%v len=%d err=%v", hit, len(oldResponse.Body), err)
 	}
 
 	version.Store(2)
@@ -390,16 +440,34 @@ func TestPublishedGenerationSwitchKeepsPreviousGenerationDuringGrace(t *testing.
 	if err != nil || !found || newManifest.Generation == oldManifest.Generation {
 		t.Fatalf("generation pointer did not switch: old=%q new=%q found=%v err=%v", oldManifest.Generation, newManifest.Generation, found, err)
 	}
-	response, hit, err := manager.GetOrFetch(ctx, spec)
-	if err != nil || !hit || !bytes.Equal(response.Body, body2) {
-		t.Fatalf("new generation is not active: hit=%v len=%d err=%v", hit, len(response.Body), err)
-	}
 	if exists := client.Exists(ctx, oldChunk).Val(); exists != 1 {
-		t.Fatal("previous generation was deleted immediately after pointer switch")
+		t.Fatal("previous generation was deleted while an active reader still held it")
 	}
-	if ttl := client.TTL(ctx, oldChunk).Val(); ttl <= 0 || ttl > retiredGenerationGrace {
-		t.Fatalf("previous generation grace TTL=%v", ttl)
+	stats, err := manager.Stats(ctx)
+	if err != nil {
+		t.Fatal(err)
 	}
+	if stats.ActiveReaders != 1 || stats.RetiredGenerations != 1 {
+		t.Fatalf("expected one reader and one retiring generation, got %+v", stats)
+	}
+
+	oldResponse.Release()
+	if exists := client.Exists(ctx, oldChunk).Val(); exists != 0 {
+		t.Fatal("previous generation was not deleted after the last active reader released it")
+	}
+	stats, err = manager.Stats(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.ActiveReaders != 0 || stats.RetiredGenerations != 0 {
+		t.Fatalf("reader retirement state did not clear: %+v", stats)
+	}
+
+	newResponse, hit, err := manager.GetOrFetch(ctx, spec)
+	if err != nil || !hit || !bytes.Equal(newResponse.Body, body2) {
+		t.Fatalf("new generation is not active: hit=%v len=%d err=%v", hit, len(newResponse.Body), err)
+	}
+	newResponse.Release()
 }
 
 func TestStagedGenerationExpiresUnlessPublished(t *testing.T) {

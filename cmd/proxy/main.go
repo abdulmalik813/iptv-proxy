@@ -75,6 +75,12 @@ func main() {
 			"endpoint":    event.Descriptor.Endpoint,
 			"action":      event.Descriptor.Action(),
 		}
+		if event.Generation != "" {
+			metadata["generation"] = event.Generation
+		}
+		if event.ActiveReaders > 0 {
+			metadata["activeReaders"] = event.ActiveReaders
+		}
 		if event.Error != "" {
 			metadata["error"] = event.Error
 		}

@@ -6,6 +6,7 @@ import { LogService } from '@/lib/services/log.service';
 
 const ALLOWED_LEVELS = new Set(['debug', 'info', 'warning', 'error', 'all']);
 const ALLOWED_ORDERS = new Set(['ASC', 'DESC']);
+const ALLOWED_GROUPS = new Set(['all', 'traffic', 'cache', 'streams', 'vpn', 'providers', 'auth', 'system']);
 const logWriteSchema = z.object({
   level: z.enum(['debug', 'info', 'warning', 'error']),
   source: z.enum(['auth', 'provider', 'vpn', 'wireguard', 'openvpn', 'warp', 'vpngate', 'system', 'proxy']),
@@ -25,12 +26,14 @@ export async function GET(req: NextRequest) {
     const level = rawLevel && ALLOWED_LEVELS.has(rawLevel) ? rawLevel : undefined;
     const source = searchParams.get('source')?.slice(0, 64) || undefined;
     const category = searchParams.get('category')?.slice(0, 128) || undefined;
+    const rawGroup = searchParams.get('group') || undefined;
+    const group = rawGroup && ALLOWED_GROUPS.has(rawGroup) ? rawGroup : undefined;
     const search = searchParams.get('search')?.slice(0, 200) || undefined;
     const limit = Number.parseInt(searchParams.get('limit') || '100', 10);
     const offset = Number.parseInt(searchParams.get('offset') || '0', 10);
     const rawOrder = (searchParams.get('order') || 'DESC').toUpperCase();
     const order = (ALLOWED_ORDERS.has(rawOrder) ? rawOrder : 'DESC') as 'ASC' | 'DESC';
-    const result = await LogService.queryLogs({ level, source, category, search, limit, offset, order });
+    const result = await LogService.queryLogs({ level, source, category, group, search, limit, offset, order });
     return NextResponse.json({ success: true, data: result.logs, total: result.total });
   } catch (error) {
     return NextResponse.json({ success: false, error: error instanceof Error ? error.message : String(error) }, { status: 500 });

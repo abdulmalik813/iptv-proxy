@@ -1,13 +1,13 @@
 'use client';
 
 import * as React from 'react';
-import { Database, RefreshCw, RotateCcw, Terminal } from 'lucide-react';
+import { Database, RefreshCw, RotateCcw, Users } from 'lucide-react';
 import { AppShell } from '@/components/layout/app-shell';
 import { PageHeader } from '@/components/layout/page-header';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Card, CardContent } from '@/components/ui/card';
 import { EmptyState } from '@/components/ui/empty-state';
 import { MetricCard } from '@/components/ui/metric-card';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
@@ -31,22 +31,15 @@ interface CacheEntry {
   descriptor?: CacheDescriptor;
   itemCount?: number;
   itemCountKnown?: boolean;
+  activeReaders?: number;
 }
 
 interface CacheStats {
   entries: number;
   bytes: number;
   registeredRefreshes: number;
-}
-
-interface LogItem {
-  id: string;
-  timestamp: string;
-  level: string;
-  source: string;
-  category: string;
-  message: string;
-  metadata?: Record<string, unknown> | null;
+  activeReaders: number;
+  retiredGenerations: number;
 }
 
 type CacheEnvelope = {
@@ -56,7 +49,13 @@ type CacheEnvelope = {
   error?: string;
 };
 
-type LogEnvelope = { success?: boolean; data?: LogItem[] };
+const emptyStats: CacheStats = {
+  entries: 0,
+  bytes: 0,
+  registeredRefreshes: 0,
+  activeReaders: 0,
+  retiredGenerations: 0,
+};
 
 function formatBytes(value: number) {
   if (!Number.isFinite(value) || value <= 0) return '0 B';
@@ -84,18 +83,9 @@ function describeEntry(entry: CacheEntry) {
   };
 }
 
-function logMeta(metadata: Record<string, unknown> | null | undefined) {
-  if (!metadata) return '';
-  return ['providerName', 'endpoint', 'action', 'status', 'bytes', 'items', 'elapsedMs']
-    .filter((key) => metadata[key] !== undefined && metadata[key] !== null && metadata[key] !== '')
-    .map((key) => `${key}=${String(metadata[key])}`)
-    .join(' · ');
-}
-
 export default function CachePage() {
   const [entries, setEntries] = React.useState<CacheEntry[]>([]);
-  const [stats, setStats] = React.useState<CacheStats>({ entries: 0, bytes: 0, registeredRefreshes: 0 });
-  const [logs, setLogs] = React.useState<LogItem[]>([]);
+  const [stats, setStats] = React.useState<CacheStats>(emptyStats);
   const [loading, setLoading] = React.useState(true);
   const [refreshingAll, setRefreshingAll] = React.useState(false);
   const [busyKey, setBusyKey] = React.useState<string | null>(null);
@@ -105,24 +95,13 @@ export default function CachePage() {
   const load = React.useCallback(async (silent = false) => {
     if (!silent) setLoading(true);
     try {
-      const [cacheResponse, logsResponse] = await Promise.all([
-        fetch(apiPath('/api/system/cache'), { cache: 'no-store' }),
-        fetch(apiPath('/api/logs?source=proxy&limit=120'), { cache: 'no-store' }),
-      ]);
+      const cacheResponse = await fetch(apiPath('/api/system/cache'), { cache: 'no-store' });
       const cachePayload = await readJson<CacheEnvelope>(cacheResponse);
-      const logsPayload = await readJson<LogEnvelope>(logsResponse);
       if (!cacheResponse.ok || !cachePayload.success) {
         throw new Error(cachePayload.error || `Unable to load cache (HTTP ${cacheResponse.status}).`);
       }
       setEntries(Array.isArray(cachePayload.data) ? cachePayload.data : []);
-      setStats(cachePayload.stats || { entries: 0, bytes: 0, registeredRefreshes: 0 });
-      if (logsResponse.ok && logsPayload.success && logsPayload.data) {
-        setLogs(
-          logsPayload.data
-            .filter((item) => item.category.startsWith('cache.') || item.category.startsWith('upstream.'))
-            .slice(0, 40),
-        );
-      }
+      setStats(cachePayload.stats || emptyStats);
     } catch (err) {
       if (!silent) setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -175,7 +154,7 @@ export default function CachePage() {
       if (!response.ok || !payload.success) {
         throw new Error(payload.error || `Cache refresh failed (HTTP ${response.status}).`);
       }
-      setMessage('Fresh provider data was validated and published for this cache entry without interrupting the active cache.');
+      setMessage('Fresh provider data was validated and published for this cache entry. Any request still using the previous generation may finish before that old generation is removed.');
       await load();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -188,7 +167,7 @@ export default function CachePage() {
     <AppShell>
       <PageHeader
         title="Cache"
-        description="Validated IPTV metadata cached in Redis with automatic background replacement."
+        description="Validated IPTV metadata cached in Redis with automatic background replacement. Cache activity is available in the unified Logs console."
         actions={
           <>
             <Button variant="outline" onClick={() => void load()} disabled={loading}>
@@ -206,11 +185,21 @@ export default function CachePage() {
       {error && <Alert variant="destructive"><AlertDescription className="whitespace-pre-wrap">{error}</AlertDescription></Alert>}
       {message && <Alert variant="success"><AlertDescription>{message}</AlertDescription></Alert>}
 
-      <div className="grid gap-4 sm:grid-cols-3">
+      <div className="grid gap-4 sm:grid-cols-3 xl:grid-cols-5">
         <MetricCard label="Entries" value={stats.entries} icon={<Database className="size-5" />} />
         <MetricCard label="Stored data" value={formatBytes(stats.bytes)} icon={<Database className="size-5" />} />
         <MetricCard label="Auto-refresh jobs" value={stats.registeredRefreshes} icon={<RefreshCw className="size-5" />} />
+        <MetricCard label="Active readers" value={stats.activeReaders} icon={<Users className="size-5" />} />
+        <MetricCard label="Retiring generations" value={stats.retiredGenerations} icon={<RotateCcw className="size-5" />} />
       </div>
+
+      {stats.retiredGenerations > 0 && (
+        <Alert>
+          <AlertDescription>
+            {stats.retiredGenerations} previous cache generation{stats.retiredGenerations === 1 ? ' is' : 's are'} waiting for active request{stats.activeReaders === 1 ? '' : 's'} to finish. Cleanup happens automatically when the last reader releases it.
+          </AlertDescription>
+        </Alert>
+      )}
 
       {loading && entries.length === 0 ? (
         <Card><CardContent className="p-8 text-center text-sm text-muted-foreground">Loading cache…</CardContent></Card>
@@ -230,6 +219,7 @@ export default function CachePage() {
                   <TableHead>Entry</TableHead>
                   <TableHead>Items</TableHead>
                   <TableHead>Size</TableHead>
+                  <TableHead>Readers</TableHead>
                   <TableHead>Fetched</TableHead>
                   <TableHead>Refresh</TableHead>
                   <TableHead className="text-right">Action</TableHead>
@@ -247,6 +237,7 @@ export default function CachePage() {
                       </TableCell>
                       <TableCell>{entry.itemCountKnown ? entry.itemCount ?? 0 : '—'}</TableCell>
                       <TableCell>{formatBytes(entry.sizeBytes)}</TableCell>
+                      <TableCell>{entry.activeReaders ?? 0}</TableCell>
                       <TableCell className="text-muted-foreground">{formatTime(entry.fetchedAt)}</TableCell>
                       <TableCell>
                         <div className="text-sm">{formatTime(refreshAt)}</div>
@@ -268,35 +259,6 @@ export default function CachePage() {
           </CardContent>
         </Card>
       )}
-
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2"><Terminal className="size-4" />Recent cache activity</CardTitle>
-          <CardDescription>Cache and upstream events from the proxy log.</CardDescription>
-        </CardHeader>
-        <CardContent>
-          {logs.length === 0 ? (
-            <div className="text-sm text-muted-foreground">No recent cache activity.</div>
-          ) : (
-            <div className="divide-y rounded-lg border">
-              {logs.map((item) => {
-                const meta = logMeta(item.metadata);
-                return (
-                  <div key={item.id} className="p-3">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <Badge variant={item.level === 'error' ? 'destructive' : item.level === 'warning' ? 'warning' : 'secondary'}>{item.level}</Badge>
-                      <span className="text-sm font-medium">{item.message}</span>
-                    </div>
-                    <div className="mt-1 text-xs text-muted-foreground">
-                      {new Date(item.timestamp).toLocaleString()}{meta ? ` · ${meta}` : ''}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </CardContent>
-      </Card>
     </AppShell>
   );
 }

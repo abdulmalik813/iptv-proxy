@@ -36,6 +36,10 @@ func (h *Handler) serveCached(w http.ResponseWriter, r *http.Request, p provider
 		http.Error(w, err.Error(), status)
 		return
 	}
+	// Keep the selected generation pinned until this HTTP request is finished.
+	// If a refresh swaps the manifest while the client is still receiving this
+	// response, the old Redis body is retired only after this deferred release.
+	defer response.Release()
 
 	cacheState := "HIT"
 	if !fromCache && spec.TTL <= 0 {
