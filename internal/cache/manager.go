@@ -16,6 +16,8 @@ import (
 
 const refreshThreshold = 0.30
 
+var ErrCacheUnavailable = errors.New("cache unavailable; refill started")
+
 type Response struct {
 	Status      int
 	ContentType string
@@ -69,6 +71,9 @@ func (m *Manager) Ping(ctx context.Context) error {
 	return m.client.Ping(ctx).Err()
 }
 
+// GetOrFetch is intentionally fail-closed for cache-enabled endpoints.
+// A missing cache starts a background refill but the current API request fails
+// instead of bypassing Redis and talking directly to the provider.
 func (m *Manager) GetOrFetch(ctx context.Context, key string, ttl time.Duration, fetch func(context.Context) (Response, error)) (Response, bool, error) {
 	if ttl <= 0 {
 		resp, err := fetch(ctx)
@@ -85,46 +90,37 @@ func (m *Manager) GetOrFetch(ctx context.Context, key string, ttl time.Duration,
 		return cached, true, nil
 	}
 
-	lockKey := "lock:" + key
-	locked, err := m.client.SetNX(ctx, lockKey, "1", 2*time.Minute).Result()
-	if err != nil {
-		return Response{}, false, err
-	}
-	if locked {
+	m.refillMissing(key, ttl, fetch)
+	return Response{}, false, ErrCacheUnavailable
+}
+
+func (m *Manager) refillMissing(key string, ttl time.Duration, fetch func(context.Context) (Response, error)) {
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+		defer cancel()
+
+		lockKey := "lock:" + key
+		locked, err := m.client.SetNX(ctx, lockKey, "1", 2*time.Minute).Result()
+		if err != nil || !locked {
+			return
+		}
 		defer m.client.Del(context.Background(), lockKey)
+
+		// Another worker may have filled the entry between the original miss and
+		// acquiring this lock. Never replace a newly-created value unnecessarily.
+		if _, _, found, err := m.get(ctx, key); err == nil && found {
+			return
+		}
+
 		fresh, err := fetch(ctx)
 		if err != nil {
-			return Response{}, false, err
+			return
 		}
 		if err := m.put(ctx, key, ttl, fresh); err != nil {
-			return Response{}, false, err
+			return
 		}
 		m.schedule(key, ttl, time.Duration(float64(ttl)*(1-refreshThreshold)), fetch)
-		return fresh, false, nil
-	}
-
-	deadline := time.Now().Add(60 * time.Second)
-	for time.Now().Before(deadline) {
-		select {
-		case <-ctx.Done():
-			return Response{}, false, ctx.Err()
-		case <-time.After(150 * time.Millisecond):
-		}
-		cached, meta, found, err := m.get(ctx, key)
-		if err != nil {
-			return Response{}, false, err
-		}
-		if found {
-			m.scheduleFromMeta(key, ttl, meta, fetch)
-			return cached, true, nil
-		}
-	}
-
-	fresh, err := fetch(ctx)
-	if err != nil {
-		return Response{}, false, err
-	}
-	return fresh, false, nil
+	}()
 }
 
 func (m *Manager) register(key string, ttl time.Duration, fetch func(context.Context) (Response, error)) {
@@ -240,20 +236,19 @@ func (m *Manager) Stats(ctx context.Context) (Stats, error) {
 	return Stats{Entries: len(entries), Bytes: bytes, RegisteredRefreshes: registered}, nil
 }
 
+// Purge is a safe replacement operation. It never deletes the current value
+// first. The provider is fetched and validated by the registered fetch closure,
+// then HSET atomically replaces the old Redis hash fields.
 func (m *Manager) Purge(ctx context.Context, key string) error {
 	if !strings.HasPrefix(key, "iptv:cache:") {
 		return errors.New("invalid cache key")
 	}
-	m.mu.Lock()
-	if timer := m.timers[key]; timer != nil {
-		timer.Stop()
-	}
-	delete(m.timers, key)
-	delete(m.specs, key)
-	m.mu.Unlock()
-	return m.client.Del(ctx, key, "lock:"+key).Err()
+	return m.replaceNow(ctx, key)
 }
 
+// PurgeAll safely replaces every currently registered cache entry. Entries that
+// have not registered a fetch closure since process start are left untouched;
+// deleting them would violate the no-empty-cache invariant.
 func (m *Manager) PurgeAll(ctx context.Context) (int, error) {
 	entries, err := m.Entries(ctx)
 	if err != nil {
@@ -261,7 +256,13 @@ func (m *Manager) PurgeAll(ctx context.Context) (int, error) {
 	}
 	count := 0
 	for _, entry := range entries {
-		if err := m.Purge(ctx, entry.Key); err != nil {
+		m.mu.Lock()
+		_, registered := m.specs[entry.Key]
+		m.mu.Unlock()
+		if !registered {
+			continue
+		}
+		if err := m.replaceNow(ctx, entry.Key); err != nil {
 			return count, err
 		}
 		count++
@@ -270,11 +271,15 @@ func (m *Manager) PurgeAll(ctx context.Context) (int, error) {
 }
 
 func (m *Manager) RefreshNow(ctx context.Context, key string) error {
+	return m.replaceNow(ctx, key)
+}
+
+func (m *Manager) replaceNow(ctx context.Context, key string) error {
 	m.mu.Lock()
 	spec, ok := m.specs[key]
 	m.mu.Unlock()
 	if !ok {
-		return errors.New("cache entry has no active refresh registration; request it once before refreshing")
+		return errors.New("cache entry has no active fetch registration; request it once before replacing it")
 	}
 
 	lockKey := "lock:" + key
@@ -283,7 +288,7 @@ func (m *Manager) RefreshNow(ctx context.Context, key string) error {
 		return err
 	}
 	if !locked {
-		return errors.New("cache refresh already in progress")
+		return errors.New("cache replacement already in progress")
 	}
 	defer m.client.Del(context.Background(), lockKey)
 
