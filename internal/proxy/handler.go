@@ -21,6 +21,7 @@ import (
 	cachepkg "github.com/abdulmalik813/iptv-proxy/internal/cache"
 	"github.com/abdulmalik813/iptv-proxy/internal/provider"
 	"github.com/abdulmalik813/iptv-proxy/internal/routing"
+	"github.com/abdulmalik813/iptv-proxy/internal/stream"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -46,6 +47,7 @@ type Handler struct {
 	resolver       *routing.Resolver
 	cache          *cachepkg.Manager
 	redis          *redis.Client
+	live           *stream.Manager
 	appURL         string
 	metadataClient *http.Client
 	streamClient   *http.Client
@@ -66,6 +68,7 @@ func NewHandler(resolver *routing.Resolver, cache *cachepkg.Manager, redisClient
 		resolver: resolver,
 		cache:    cache,
 		redis:    redisClient,
+		live:     stream.NewManager(),
 		appURL:   strings.TrimSuffix(appURL, "/"),
 		metadataClient: &http.Client{
 			Transport: transport.Clone(),
@@ -97,6 +100,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	if isCacheable(endpoint, r.URL.Query()) {
 		h.serveCached(w, r, resolved.Provider, endpoint, upstreamURL)
+		return
+	}
+	if shouldMultiplexLive(r, endpoint, upstreamURL) {
+		h.serveLiveMultiplexed(w, r, resolved.Provider, upstreamURL)
 		return
 	}
 	h.serveDirect(w, r, resolved.Provider, upstreamURL)
@@ -154,6 +161,67 @@ func isCacheable(endpoint string, q url.Values) bool {
 	default:
 		return false
 	}
+}
+
+func shouldMultiplexLive(r *http.Request, endpoint string, target *url.URL) bool {
+	if r.Method != http.MethodGet || endpoint != "live" {
+		return false
+	}
+	return !strings.EqualFold(path.Ext(target.Path), ".m3u8")
+}
+
+func (h *Handler) serveLiveMultiplexed(w http.ResponseWriter, r *http.Request, p provider.Provider, target *url.URL) {
+	key := liveStreamKey(p.ID, target)
+	session, viewer, err := h.live.Subscribe(r.Context(), key, func(ctx context.Context) (*http.Response, error) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, target.String(), nil)
+		if err != nil {
+			return nil, err
+		}
+		copySafeRequestHeaders(req.Header, r.Header)
+		req.Header.Del("Range")
+		return h.streamClient.Do(req)
+	})
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	defer session.Remove(viewer)
+
+	copyResponseHeaders(w.Header(), session.Header())
+	w.Header().Del("Content-Length")
+	w.Header().Set("X-IPTV-Multiplexed", "1")
+	w.WriteHeader(session.StatusCode())
+	controller := http.NewResponseController(w)
+
+	for {
+		chunk, err := viewer.Next(r.Context())
+		if err != nil {
+			return
+		}
+		if len(chunk) == 0 {
+			continue
+		}
+		if _, err := w.Write(chunk); err != nil {
+			return
+		}
+		_ = controller.Flush()
+	}
+}
+
+func liveStreamKey(providerID string, target *url.URL) string {
+	segments := strings.Split(strings.Trim(target.Path, "/"), "/")
+	streamID := "live"
+	if len(segments) > 0 {
+		streamID = segments[len(segments)-1]
+	}
+	q := target.Query()
+	q.Del("username")
+	q.Del("password")
+	return "live:" + providerID + ":" + streamID + ":" + q.Encode()
+}
+
+func (h *Handler) LiveSnapshots() []stream.Snapshot {
+	return h.live.Snapshots()
 }
 
 func (h *Handler) serveCached(w http.ResponseWriter, r *http.Request, p provider.Provider, endpoint string, upstreamURL *url.URL) {
