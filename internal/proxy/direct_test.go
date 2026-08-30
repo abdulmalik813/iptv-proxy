@@ -84,13 +84,13 @@ func TestBuildUpstreamURLRejectsDisabledProviderUser(t *testing.T) {
 
 func TestBuildUpstreamURLStreamingTimeshiftQuery(t *testing.T) {
 	p := testProvider()
-	r := httptest.NewRequest(http.MethodGet, "http://proxy/streaming/timeshift.php?username=local&password=secret&stream=123&duration=60", nil)
+	r := httptest.NewRequest(http.MethodGet, "http://proxy/streaming/timeshift.php?username=local&password=secret&stream=123&start=2026-08-30:01-00&duration=60", nil)
 	target, _, _, err := buildUpstreamURL(routing.Resolved{Provider: p, RemainingPath: r.URL.Path}, r)
 	if err != nil {
 		t.Fatal(err)
 	}
 	q := target.Query()
-	if q.Get("username") != "up" || q.Get("password") != "pass" || q.Get("stream") != "123" {
+	if q.Get("username") != "up" || q.Get("password") != "pass" || q.Get("stream") != "123" || q.Get("start") != "2026-08-30:01-00" || q.Get("duration") != "60" {
 		t.Fatalf("query=%v", q)
 	}
 }
