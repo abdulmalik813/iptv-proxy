@@ -38,6 +38,10 @@ services:
     image: ghcr.io/abdulmalik813/iptv-reverse-proxy:latest
     pull_policy: always
     restart: unless-stopped
+    depends_on:
+      iptv-proxy-admin:
+        condition: service_healthy
+    network_mode: "service:iptv-proxy-admin"
     command: ["/usr/local/bin/iptv-go-proxy"]
     environment:
       GO_PROXY_ADDR: :8080
@@ -47,9 +51,6 @@ services:
       timeout: 5s
       retries: 3
       start_period: 10s
-    networks:
-      - dokploy-network
-      - iptv-internal
 
 volumes:
   iptv-proxy-data:
