@@ -84,32 +84,32 @@ func (h *Handler) warmOne(ctx context.Context, p provider.Provider, warm warmSpe
 	spec := h.newCacheSpec(p, warm.endpoint, target, nil)
 	ctx = ensureTrace(ctx)
 	h.trace(ctx, "info", "cache.warm.queued", "IPTV cache pull queued", map[string]any{
-		"providerId": p.ID,
+		"providerId":   p.ID,
 		"providerName": p.Name,
-		"endpoint": warm.endpoint,
-		"action": warm.action,
-		"cacheKey": spec.Key,
+		"endpoint":     warm.endpoint,
+		"action":       warm.action,
+		"cacheKey":     spec.Key,
 	})
 	started := time.Now()
 	if err := h.cache.Warm(ctx, spec); err != nil {
 		h.trace(ctx, "error", "cache.warm.error", "IPTV cache pull failed", map[string]any{
-			"providerId": p.ID,
+			"providerId":   p.ID,
 			"providerName": p.Name,
-			"endpoint": warm.endpoint,
-			"action": warm.action,
-			"cacheKey": spec.Key,
-			"elapsedMs": time.Since(started).Milliseconds(),
-			"error": err.Error(),
+			"endpoint":     warm.endpoint,
+			"action":       warm.action,
+			"cacheKey":     spec.Key,
+			"elapsedMs":    time.Since(started).Milliseconds(),
+			"error":        err.Error(),
 		})
 		return err
 	}
 	h.trace(ctx, "info", "cache.warm.success", "IPTV cache pull completed", map[string]any{
-		"providerId": p.ID,
+		"providerId":   p.ID,
 		"providerName": p.Name,
-		"endpoint": warm.endpoint,
-		"action": warm.action,
-		"cacheKey": spec.Key,
-		"elapsedMs": time.Since(started).Milliseconds(),
+		"endpoint":     warm.endpoint,
+		"action":       warm.action,
+		"cacheKey":     spec.Key,
+		"elapsedMs":    time.Since(started).Milliseconds(),
 	})
 	return nil
 }

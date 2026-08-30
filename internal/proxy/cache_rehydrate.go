@@ -42,21 +42,21 @@ func (h *Handler) RehydratePersistedCache(ctx context.Context) (int, error) {
 		if err != nil {
 			problems = append(problems, err)
 			h.trace(ensureTrace(ctx), "warning", "cache.rehydrate.failed", "Unable to restore persisted cache refresh job", map[string]any{
-				"cacheKey": entry.Key,
+				"cacheKey":   entry.Key,
 				"providerId": descriptor.ProviderID,
-				"endpoint": descriptor.Endpoint,
-				"action": descriptor.Action(),
-				"error": err.Error(),
+				"endpoint":   descriptor.Endpoint,
+				"action":     descriptor.Action(),
+				"error":      err.Error(),
 			})
 			continue
 		}
 		registered++
 		h.trace(ensureTrace(ctx), "info", "cache.rehydrate.success", "Persisted cache refresh job restored", map[string]any{
-			"cacheKey": spec.Key,
+			"cacheKey":   spec.Key,
 			"providerId": descriptor.ProviderID,
-			"endpoint": descriptor.Endpoint,
-			"action": descriptor.Action(),
-			"migrated": legacy || entry.Key != spec.Key,
+			"endpoint":   descriptor.Endpoint,
+			"action":     descriptor.Action(),
+			"migrated":   legacy || entry.Key != spec.Key,
 		})
 	}
 	return registered, errors.Join(problems...)

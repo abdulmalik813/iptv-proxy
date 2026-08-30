@@ -31,10 +31,7 @@ export async function POST(req: NextRequest) {
   if (requestError) return NextResponse.json({ success: false, error: requestError }, { status: 403 });
   const user = await getSessionUser();
   if (!user) return NextResponse.json({ success: false, error: 'Unauthorized' }, { status: 401 });
-  const key = new URL(req.url).searchParams.get('key')?.trim();
-  const target = key
-    ? `http://127.0.0.1:8080/internal/cache/refresh?key=${encodeURIComponent(key)}`
-    : 'http://127.0.0.1:8080/internal/cache/start';
+  const target = 'http://127.0.0.1:8080/internal/cache/start';
   try {
     const response = await fetch(target, { method: 'POST', headers: headers(), signal: AbortSignal.timeout(30 * 60 * 1000) });
     return NextResponse.json(await readJson(response), { status: response.status });

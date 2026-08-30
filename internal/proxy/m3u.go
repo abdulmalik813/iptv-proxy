@@ -1,7 +1,6 @@
 package proxy
 
 import (
-	"bufio"
 	"bytes"
 	"net/url"
 	"strings"
@@ -10,24 +9,18 @@ import (
 )
 
 func (h *Handler) rewriteM3UPlaylist(p provider.Provider, body []byte) []byte {
-	var out strings.Builder
-	scanner := bufio.NewScanner(bytes.NewReader(body))
-	scanner.Buffer(make([]byte, 64*1024), maxMetadataBytes)
-	for scanner.Scan() {
-		line := scanner.Text()
+	lines := bytes.Split(body, []byte("\n"))
+	for i, rawLine := range lines {
+		line := string(rawLine)
 		trimmed := strings.TrimSpace(line)
 		if trimmed != "" && !strings.HasPrefix(trimmed, "#") {
 			if rewritten, ok := h.rewriteM3UTarget(p, trimmed); ok {
 				line = rewritten
 			}
 		}
-		out.WriteString(line)
-		out.WriteByte('\n')
+		lines[i] = []byte(line)
 	}
-	if scanner.Err() != nil {
-		return body
-	}
-	return []byte(out.String())
+	return bytes.Join(lines, []byte("\n"))
 }
 
 func (h *Handler) rewriteM3UTarget(p provider.Provider, raw string) (string, bool) {

@@ -264,7 +264,7 @@ export default function CachePage() {
             ) : (
               <div className="overflow-x-auto">
                 <table className="w-full text-left text-xs">
-                  <thead className="border-b border-neutral-800 bg-neutral-900 text-[10px] uppercase text-neutral-400"><tr><th className="p-3">Cache Entry</th><th className="p-3">Size</th><th className="p-3">Fetched</th><th className="p-3">Refresh Point</th><th className="p-3 text-right">Actions</th></tr></thead>
+                  <thead className="border-b border-neutral-800 bg-neutral-900 text-[10px] uppercase text-neutral-400"><tr><th className="p-3">Cache Entry</th><th className="p-3">Size</th><th className="p-3">Fetched</th><th className="p-3">Refresh Point</th><th className="p-3 text-right">Action</th></tr></thead>
                   <tbody className="divide-y divide-neutral-900">
                     {sorted.map((entry) => {
                       const refreshAt = entry.fetchedAt + Math.round(entry.ttlSeconds * 0.7);

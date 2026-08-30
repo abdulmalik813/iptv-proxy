@@ -20,10 +20,12 @@ import (
 )
 
 const (
-	refreshThreshold = 0.30
-	bodyChunkSize     = 8 * 1024 * 1024
-	fetchTimeout      = 10 * time.Minute
-	lockTTL           = 12 * time.Minute
+	refreshThreshold       = 0.30
+	bodyChunkSize          = 8 * 1024 * 1024
+	fetchTimeout           = 10 * time.Minute
+	lockTTL                = 12 * time.Minute
+	stagingGenerationTTL   = 2 * time.Hour
+	retiredGenerationGrace = 30 * time.Minute
 )
 
 var (
@@ -31,6 +33,25 @@ var (
 	ErrReplacementInProgress      = errors.New("cache replacement already in progress")
 	ErrSuspiciousEmptyReplacement = errors.New("provider returned an empty catalog; existing non-empty cache was preserved")
 	releaseLockScript             = redis.NewScript(`if redis.call("GET", KEYS[1]) == ARGV[1] then return redis.call("DEL", KEYS[1]) else return 0 end`)
+	publishGenerationScript       = redis.NewScript(`
+for i = 2, #KEYS do
+  if redis.call("EXISTS", KEYS[i]) == 0 then
+    return redis.error_reply("missing staged cache chunk")
+  end
+end
+for i = 2, #KEYS do
+  redis.call("PERSIST", KEYS[i])
+end
+redis.call("HSET", KEYS[1],
+  "status", ARGV[1],
+  "content_type", ARGV[2],
+  "meta", ARGV[3],
+  "descriptor", ARGV[4],
+  "generation", ARGV[5],
+  "chunk_count", ARGV[6])
+redis.call("HDEL", KEYS[1], "body")
+return 1
+`)
 )
 
 type Response struct {
@@ -231,10 +252,6 @@ func (m *Manager) Warm(ctx context.Context, spec Spec) error {
 		return err
 	}
 	return m.replaceWithSpec(ctx, m.registerIfAbsent(spec), "warm")
-}
-
-func (m *Manager) RefreshNow(ctx context.Context, key string) error {
-	return m.replaceNow(ctx, key, "refresh")
 }
 
 // Purge intentionally has safe-repull semantics. It never empties an active
@@ -449,7 +466,7 @@ func (m *Manager) Entries(ctx context.Context) ([]Entry, error) {
 			}
 			size := currentManifest.Meta.SizeBytes
 			if size == 0 && currentManifest.Generation == "" {
-				if legacySize, err := m.client.HStrLen(ctx, key, "body").Result(); err == nil {
+				if legacySize, err := m.client.Do(ctx, "HSTRLEN", key, "body").Int64(); err == nil {
 					size = legacySize
 				}
 			}
@@ -592,25 +609,28 @@ func (m *Manager) publish(ctx context.Context, spec Spec, response Response, old
 	if err != nil {
 		return err
 	}
-	_, err = m.client.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
-		pipe.HSet(ctx, spec.Key, map[string]any{
-			"status":       response.Status,
-			"content_type": response.ContentType,
-			"meta":         string(metaJSON),
-			"descriptor":   string(descriptorJSON),
-			"generation":   generation,
-			"chunk_count":  chunkCount,
-		})
-		pipe.HDel(ctx, spec.Key, "body")
-		return nil
-	})
-	if err != nil {
+	keys := make([]string, 1, chunkCount+1)
+	keys[0] = spec.Key
+	for i := 0; i < chunkCount; i++ {
+		keys = append(keys, bodyKey(spec.Key, generation, i))
+	}
+	if _, err = publishGenerationScript.Run(
+		ctx,
+		m.client,
+		keys,
+		response.Status,
+		response.ContentType,
+		string(metaJSON),
+		string(descriptorJSON),
+		generation,
+		chunkCount,
+	).Result(); err != nil {
 		return err
 	}
 	cleanupNew = false
 
 	if oldFound && oldManifest.Generation != "" && oldManifest.Generation != generation && oldManifest.ChunkCount > 0 {
-		m.cleanupGeneration(context.Background(), spec.Key, oldManifest.Generation, oldManifest.ChunkCount)
+		m.retireGeneration(context.Background(), spec.Key, oldManifest.Generation, oldManifest.ChunkCount)
 	}
 	return nil
 }
@@ -626,7 +646,7 @@ func (m *Manager) writeGeneration(ctx context.Context, key, generation string, b
 		if end > len(body) {
 			end = len(body)
 		}
-		if err := m.client.Set(ctx, bodyKey(key, generation, i), body[start:end], 0).Err(); err != nil {
+		if err := m.client.Set(ctx, bodyKey(key, generation, i), body[start:end], stagingGenerationTTL).Err(); err != nil {
 			m.cleanupGeneration(context.Background(), key, generation, i)
 			return 0, err
 		}
@@ -647,6 +667,15 @@ func (m *Manager) readGeneration(ctx context.Context, key, generation string, ch
 		_, _ = buffer.Write(chunk)
 	}
 	return buffer.Bytes(), nil
+}
+
+func (m *Manager) retireGeneration(ctx context.Context, key, generation string, chunkCount int) {
+	if generation == "" || chunkCount <= 0 {
+		return
+	}
+	for i := 0; i < chunkCount; i++ {
+		_ = m.client.Expire(ctx, bodyKey(key, generation, i), retiredGenerationGrace).Err()
+	}
 }
 
 func (m *Manager) cleanupGeneration(ctx context.Context, key, generation string, chunkCount int) {
