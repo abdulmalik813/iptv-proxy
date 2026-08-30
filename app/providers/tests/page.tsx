@@ -63,6 +63,26 @@ function display(value: unknown) {
   return value === null || value === undefined || value === '' ? 'N/A' : String(value);
 }
 
+async function parseResponse(response: Response): Promise<Record<string, unknown>> {
+  const raw = await response.text();
+  const contentType = response.headers.get('content-type') || '';
+  if (!raw) return {};
+
+  if (contentType.includes('application/json')) {
+    try {
+      return JSON.parse(raw) as Record<string, unknown>;
+    } catch {
+      return { success: false, error: raw };
+    }
+  }
+
+  try {
+    return JSON.parse(raw) as Record<string, unknown>;
+  } catch {
+    return { success: false, error: raw };
+  }
+}
+
 export default function ProviderTestsPage() {
   const router = useRouter();
   const [mobileOpen, setMobileOpen] = useState(false);
@@ -87,13 +107,13 @@ export default function ProviderTestsPage() {
         return;
       }
 
-      const auth = await authRes.json();
-      const providerPayload = await providersRes.json();
-      if (auth.authenticated) setUser(auth.user);
+      const auth = await parseResponse(authRes);
+      const providerPayload = await parseResponse(providersRes);
+      if (auth.authenticated) setUser(auth.user as { username: string });
       if (!providersRes.ok || !providerPayload.success) {
-        throw new Error(providerPayload.error || 'Unable to load providers.');
+        throw new Error(String(providerPayload.error || `Unable to load providers (HTTP ${providersRes.status}).`));
       }
-      setProviders(providerPayload.data);
+      setProviders(providerPayload.data as ProviderItem[]);
     } catch (error) {
       setLoadError(error instanceof Error ? error.message : String(error));
     } finally {
@@ -113,13 +133,13 @@ export default function ProviderTestsPage() {
 
     try {
       const response = await fetch(`/api/providers/${provider.id}/test`, { method: 'POST' });
-      const payload = await response.json();
+      const payload = await parseResponse(response);
       if (!response.ok || !payload.success) {
-        throw new Error(payload.error || `Provider test failed with HTTP ${response.status}.`);
+        throw new Error(String(payload.error || `Provider test failed with HTTP ${response.status}.`));
       }
       setResults((current) => ({
         ...current,
-        [provider.id]: { loading: false, data: payload.data, error: null },
+        [provider.id]: { loading: false, data: payload.data as ProviderTestData, error: null },
       }));
     } catch (error) {
       setResults((current) => ({
@@ -154,38 +174,22 @@ export default function ProviderTestsPage() {
                 <FlaskConical className="h-5 w-5" /> Provider Account Tests
               </h1>
               <p className="mt-1 text-xs text-neutral-500">
-                Verify each upstream Xtream account and inspect safe account/server information without exposing stored passwords.
+                Verify each upstream Xtream account and inspect the exact response when a provider returns JSON, HTML, or plain text.
               </p>
             </div>
             <div className="flex gap-2">
-              <button
-                onClick={() => void loadProviders()}
-                disabled={loading}
-                className="flex items-center gap-2 border border-neutral-700 bg-black px-3 py-2 text-xs font-bold uppercase disabled:opacity-50"
-              >
+              <button onClick={() => void loadProviders()} disabled={loading} className="flex items-center gap-2 border border-neutral-700 bg-black px-3 py-2 text-xs font-bold uppercase disabled:opacity-50">
                 <RefreshCw className={`h-3.5 w-3.5 ${loading ? 'animate-spin' : ''}`} /> Refresh
               </button>
-              <button
-                onClick={() => void testAll()}
-                disabled={testingAll || providers.length === 0}
-                className="flex items-center gap-2 border border-white bg-white px-3 py-2 text-xs font-bold uppercase text-black disabled:opacity-50"
-              >
+              <button onClick={() => void testAll()} disabled={testingAll || providers.length === 0} className="flex items-center gap-2 border border-white bg-white px-3 py-2 text-xs font-bold uppercase text-black disabled:opacity-50">
                 <FlaskConical className="h-3.5 w-3.5" /> {testingAll ? 'Testing All...' : 'Test All'}
               </button>
             </div>
           </div>
 
-          {loadError && (
-            <div className="flex items-start gap-2 border border-rose-900 bg-rose-950/30 p-3 text-xs text-rose-300">
-              <XCircle className="mt-0.5 h-4 w-4 shrink-0" /> {loadError}
-            </div>
-          )}
+          {loadError && <div className="flex items-start gap-2 border border-rose-900 bg-rose-950/30 p-3 text-xs text-rose-300"><XCircle className="mt-0.5 h-4 w-4 shrink-0" /><pre className="whitespace-pre-wrap break-all">{loadError}</pre></div>}
 
-          {!loading && providers.length === 0 && !loadError && (
-            <div className="border border-neutral-800 bg-neutral-950 p-8 text-center text-xs text-neutral-500">
-              No IPTV providers are configured yet.
-            </div>
-          )}
+          {!loading && providers.length === 0 && !loadError && <div className="border border-neutral-800 bg-neutral-950 p-8 text-center text-xs text-neutral-500">No IPTV providers are configured yet.</div>}
 
           <div className="space-y-4">
             {providers.map((provider) => {
@@ -203,23 +207,16 @@ export default function ProviderTestsPage() {
                       </div>
                       <div className="mt-1 break-all text-[11px] text-neutral-500">{provider.host} · {provider.upstream_username}</div>
                     </div>
-                    <button
-                      onClick={() => void testProvider(provider)}
-                      disabled={state.loading}
-                      className="flex shrink-0 items-center justify-center gap-2 border border-neutral-700 bg-black px-3 py-2 text-xs font-bold uppercase hover:border-white disabled:opacity-50"
-                    >
+                    <button onClick={() => void testProvider(provider)} disabled={state.loading} className="flex shrink-0 items-center justify-center gap-2 border border-neutral-700 bg-black px-3 py-2 text-xs font-bold uppercase hover:border-white disabled:opacity-50">
                       {state.loading ? <RefreshCw className="h-3.5 w-3.5 animate-spin" /> : <FlaskConical className="h-3.5 w-3.5" />}
                       {state.loading ? 'Testing...' : 'Test Account'}
                     </button>
                   </div>
 
                   {state.error && (
-                    <div className="m-4 flex items-start gap-2 border border-rose-900 bg-rose-950/30 p-3 text-xs text-rose-300">
-                      <XCircle className="mt-0.5 h-4 w-4 shrink-0" />
-                      <div>
-                        <div className="font-bold uppercase">Test Failed</div>
-                        <div className="mt-1 break-words">{state.error}</div>
-                      </div>
+                    <div className="m-4 border border-rose-900 bg-rose-950/30 p-3 text-xs text-rose-300">
+                      <div className="mb-2 flex items-center gap-2 font-bold uppercase"><XCircle className="h-4 w-4" /> Test Failed / Raw Response</div>
+                      <pre className="max-h-80 overflow-auto whitespace-pre-wrap break-all rounded-none bg-black p-3 text-[11px] leading-relaxed text-rose-200">{state.error}</pre>
                     </div>
                   )}
 
@@ -236,53 +233,28 @@ export default function ProviderTestsPage() {
                         <h3 className="mb-2 text-[10px] font-bold uppercase tracking-wider text-neutral-500">Account Information</h3>
                         <div className="grid gap-px overflow-hidden border border-neutral-800 bg-neutral-800 sm:grid-cols-2 lg:grid-cols-4">
                           {[
-                            ['Username', display(account.username)],
-                            ['Status', display(account.status)],
-                            ['Expires', formatEpoch(account.expiresAt)],
-                            ['Trial', display(account.isTrial)],
-                            ['Active Connections', display(account.activeConnections)],
-                            ['Max Connections', display(account.maxConnections)],
-                            ['Created', formatEpoch(account.createdAt)],
+                            ['Username', display(account.username)], ['Status', display(account.status)], ['Expires', formatEpoch(account.expiresAt)], ['Trial', display(account.isTrial)],
+                            ['Active Connections', display(account.activeConnections)], ['Max Connections', display(account.maxConnections)], ['Created', formatEpoch(account.createdAt)],
                             ['Formats', account.allowedOutputFormats.length ? account.allowedOutputFormats.join(', ') : 'N/A'],
-                          ].map(([label, value]) => (
-                            <div key={label} className="bg-black p-3">
-                              <div className="text-[9px] font-bold uppercase text-neutral-600">{label}</div>
-                              <div className="mt-1 break-words text-xs text-white">{value}</div>
-                            </div>
-                          ))}
+                          ].map(([label, value]) => <div key={label} className="bg-black p-3"><div className="text-[9px] font-bold uppercase text-neutral-600">{label}</div><div className="mt-1 break-words text-xs text-white">{value}</div></div>)}
                         </div>
                       </div>
 
                       {server && (
                         <div>
-                          <h3 className="mb-2 flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-neutral-500">
-                            <Server className="h-3 w-3" /> Server Information
-                          </h3>
+                          <h3 className="mb-2 flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-neutral-500"><Server className="h-3 w-3" /> Server Information</h3>
                           <div className="grid gap-px overflow-hidden border border-neutral-800 bg-neutral-800 sm:grid-cols-2 lg:grid-cols-4">
                             {[
-                              ['Server', display(server.url)],
-                              ['Protocol', display(server.protocol)],
-                              ['Port', display(server.port)],
-                              ['HTTPS Port', display(server.httpsPort)],
-                              ['RTMP Port', display(server.rtmpPort)],
-                              ['Timezone', display(server.timezone)],
-                              ['Server Time', display(server.timeNow)],
-                              ['Timestamp', display(server.timestampNow)],
-                            ].map(([label, value]) => (
-                              <div key={label} className="bg-black p-3">
-                                <div className="text-[9px] font-bold uppercase text-neutral-600">{label}</div>
-                                <div className="mt-1 break-words text-xs text-neutral-300">{value}</div>
-                              </div>
-                            ))}
+                              ['Server', display(server.url)], ['Protocol', display(server.protocol)], ['Port', display(server.port)], ['HTTPS Port', display(server.httpsPort)],
+                              ['RTMP Port', display(server.rtmpPort)], ['Timezone', display(server.timezone)], ['Server Time', display(server.timeNow)], ['Timestamp', display(server.timestampNow)],
+                            ].map(([label, value]) => <div key={label} className="bg-black p-3"><div className="text-[9px] font-bold uppercase text-neutral-600">{label}</div><div className="mt-1 break-words text-xs text-neutral-300">{value}</div></div>)}
                           </div>
                         </div>
                       )}
                     </div>
                   )}
 
-                  {!state.loading && !state.error && !state.data && (
-                    <div className="p-4 text-xs text-neutral-600">Not tested yet.</div>
-                  )}
+                  {!state.loading && !state.error && !state.data && <div className="p-4 text-xs text-neutral-600">Not tested yet.</div>}
                 </section>
               );
             })}
