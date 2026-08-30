@@ -79,7 +79,7 @@ function rowToLog(row: Record<string, unknown>): LogEntry {
 function addGroupCondition(group: string, conditions: string[]) {
   switch (group) {
     case 'traffic':
-      conditions.push("(category LIKE 'request.%' OR category LIKE 'upstream.%' OR category LIKE 'route.%' OR category = 'direct.route')");
+      conditions.push("(category LIKE 'request.%' OR category LIKE 'upstream.%' OR category LIKE 'route.%' OR category IN ('direct.route', 'cache.route', 'cache.result', 'live.route', 'hls.token'))");
       break;
     case 'cache':
       conditions.push("category LIKE 'cache.%'");
