@@ -16,6 +16,8 @@ services:
       DATABASE_PATH: /data/iptv-proxy.db
       SESSION_SECRET: ${SESSION_SECRET:-}
       UI_URL: ${UI_URL:-http://localhost:3000/ui}
+      APP_URL: ${APP_URL:-http://localhost:8080}
+      GO_PROXY_ADDR: :8080
       COOKIE_SECURE: ${COOKIE_SECURE:-false}
       INITIAL_ADMIN_USERNAME: ${INITIAL_ADMIN_USERNAME:-admin}
       INITIAL_ADMIN_PASSWORD: ${INITIAL_ADMIN_PASSWORD:-}
@@ -29,37 +31,8 @@ services:
       net.ipv4.ip_forward: "1"
       net.ipv4.conf.all.src_valid_mark: "1"
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:3000/ui/api/health"]
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:3000/ui/api/health >/dev/null && curl -fsS http://127.0.0.1:8080/health >/dev/null"]
       interval: 30s
       timeout: 5s
       retries: 3
       start_period: 20s
-    networks:
-      - iptv-internal
-
-  iptv-go-proxy:
-    build:
-      context: .
-      dockerfile: Dockerfile
-      args:
-        UI_URL: ${UI_URL:-http://localhost:3000/ui}
-    container_name: iptv-go-proxy
-    restart: unless-stopped
-    depends_on:
-      iptv-proxy-admin:
-        condition: service_healthy
-    network_mode: "service:iptv-proxy-admin"
-    command: ["/usr/local/bin/iptv-go-proxy"]
-    environment:
-      APP_URL: ${APP_URL:-http://localhost:8080}
-      GO_PROXY_ADDR: :8080
-    healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/health"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-      start_period: 10s
-
-networks:
-  iptv-internal:
-    driver: bridge
