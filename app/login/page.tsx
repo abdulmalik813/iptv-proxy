@@ -2,9 +2,9 @@
 
 import React, { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
-import { Lock, User, KeyRound, Server, AlertTriangle, ShieldCheck } from 'lucide-react';
+import { Lock, User, KeyRound, AlertTriangle, ShieldCheck } from 'lucide-react';
 
-const UI_BASE = '/ui';
+const UI_BASE = process.env.NEXT_PUBLIC_UI_BASE_PATH || '/ui';
 
 export default function LoginPage() {
   const router = useRouter();
@@ -22,7 +22,7 @@ export default function LoginPage() {
         const res = await fetch(`${UI_BASE}/api/auth/me`, { cache: 'no-store' });
         const data = await res.json();
         if (data.authenticated) {
-          router.push(`${UI_BASE}/dashboard`);
+          router.push('/dashboard');
           return;
         }
         if (data.needsSetup) setIsSetup(true);
@@ -65,7 +65,8 @@ export default function LoginPage() {
         return;
       }
 
-      router.push(`${UI_BASE}/dashboard`);
+      // Next.js router automatically applies next.config basePath.
+      router.push('/dashboard');
       router.refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Network or server error. Please try again.');
