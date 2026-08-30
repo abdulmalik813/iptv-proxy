@@ -3,6 +3,7 @@ package stream
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"sync"
@@ -28,6 +29,8 @@ type Session struct {
 	ctx       context.Context
 	cancel    context.CancelFunc
 	ready     chan struct{}
+	start     chan struct{}
+	startOnce sync.Once
 	done      chan struct{}
 	mu        sync.RWMutex
 	viewers   map[uint64]*Viewer
@@ -68,6 +71,7 @@ func (m *Manager) Subscribe(ctx context.Context, key string, open OpenFunc) (*Se
 				ctx:       sessionCtx,
 				cancel:    cancel,
 				ready:     make(chan struct{}),
+				start:     make(chan struct{}),
 				done:      make(chan struct{}),
 				viewers:   make(map[uint64]*Viewer),
 				startedAt: time.Now(),
@@ -137,13 +141,23 @@ func (s *Session) run(open OpenFunc) {
 		s.finish()
 		return
 	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		s.openErr = fmt.Errorf("provider live stream returned HTTP %d", resp.StatusCode)
+		_ = resp.Body.Close()
+		close(s.ready)
+		s.finish()
+		return
+	}
+
 	s.response = resp
 	close(s.ready)
 	defer resp.Body.Close()
 	defer s.finish()
 
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+	select {
+	case <-s.ctx.Done():
 		return
+	case <-s.start:
 	}
 
 	buffer := make([]byte, chunkSize)
@@ -156,7 +170,7 @@ func (s *Session) run(open OpenFunc) {
 		}
 		if readErr != nil {
 			if !errors.Is(readErr, io.EOF) && !errors.Is(readErr, context.Canceled) {
-				// Existing viewers simply observe stream closure; a new request will create a fresh session.
+				// Existing viewers observe stream closure; the next request creates a fresh session.
 			}
 			return
 		}
@@ -177,6 +191,7 @@ func (s *Session) addViewer() *Viewer {
 	s.mu.Lock()
 	s.viewers[viewer.id] = viewer
 	s.mu.Unlock()
+	s.startOnce.Do(func() { close(s.start) })
 	return viewer
 }
 
@@ -219,10 +234,7 @@ func (v *Viewer) Next(ctx context.Context) ([]byte, error) {
 		return nil, ctx.Err()
 	case <-v.closed:
 		return nil, io.EOF
-	case chunk, ok := <-v.queue:
-		if !ok {
-			return nil, io.EOF
-		}
+	case chunk := <-v.queue:
 		return chunk, nil
 	}
 }
@@ -258,6 +270,5 @@ func (s *Session) WaitDone() <-chan struct{} {
 }
 
 func SlowViewerGrace() time.Duration {
-	// Queue saturation is the hard eviction boundary. Keeping this exported makes the policy visible to status/tests.
 	return 30 * time.Second
 }
