@@ -86,7 +86,7 @@ export async function initDatabase(): Promise<void> {
 
     const dbPath = resolveDatabasePath();
     try {
-      if (fs.existsSync(dbPath)) fs.chmodSync(dbPath, 0o600);
+      if (fs.existsSync(/*turbopackIgnore: true*/ dbPath)) fs.chmodSync(dbPath, 0o600);
     } catch {
       // Docker Desktop/Windows bind mounts may ignore chmod.
     }
