@@ -1,18 +1,22 @@
 'use client';
 
-import React from 'react';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import {
   Database,
   FlaskConical,
   LayoutDashboard,
-  Tv,
-  Shield,
+  LogOut,
   ScrollText,
   Settings,
-  LogOut,
+  Shield,
+  Tv,
+  X,
 } from 'lucide-react';
+import { Button } from '@/components/ui/button';
+import { Separator } from '@/components/ui/separator';
+import { apiPath } from '@/lib/client/api';
+import { cn } from '@/lib/utils';
 
 interface SidebarProps {
   user?: { username: string } | null;
@@ -21,85 +25,112 @@ interface SidebarProps {
   setMobileOpen?: (open: boolean) => void;
 }
 
-export function Sidebar({ user, onLogout, mobileOpen, setMobileOpen }: SidebarProps) {
+const groups = [
+  {
+    label: 'Overview',
+    items: [{ name: 'Dashboard', href: '/dashboard', icon: LayoutDashboard }],
+  },
+  {
+    label: 'IPTV',
+    items: [
+      { name: 'Providers', href: '/providers', icon: Tv },
+      { name: 'Provider Tests', href: '/providers/tests', icon: FlaskConical },
+      { name: 'Cache', href: '/cache', icon: Database },
+    ],
+  },
+  {
+    label: 'Network',
+    items: [{ name: 'VPN', href: '/vpn', icon: Shield }],
+  },
+  {
+    label: 'System',
+    items: [
+      { name: 'Logs', href: '/logs', icon: ScrollText },
+      { name: 'Settings', href: '/settings', icon: Settings },
+    ],
+  },
+];
+
+export function Sidebar({ user, onLogout, mobileOpen = false, setMobileOpen }: SidebarProps) {
   const pathname = usePathname();
   const router = useRouter();
 
   const handleLogout = async () => {
     try {
-      await fetch('/api/auth/logout', { method: 'POST' });
-      if (onLogout) onLogout();
-      router.push('/login');
+      await fetch(apiPath('/api/auth/logout'), { method: 'POST' });
+    } finally {
+      onLogout?.();
+      router.replace('/login');
       router.refresh();
-    } catch {
-      router.push('/login');
     }
   };
 
-  const navItems = [
-    { name: 'Dashboard', href: '/dashboard', icon: LayoutDashboard },
-    { name: 'Providers', href: '/providers', icon: Tv },
-    { name: 'Provider Tests', href: '/providers/tests', icon: FlaskConical },
-    { name: 'Cache', href: '/cache', icon: Database },
-    { name: 'VPN System', href: '/vpn', icon: Shield },
-    { name: 'Live Logs', href: '/logs', icon: ScrollText },
-    { name: 'Settings', href: '/settings', icon: Settings },
-  ];
+  const isActive = (href: string) => {
+    if (href === '/providers') return pathname === '/providers';
+    return pathname === href || pathname.startsWith(`${href}/`);
+  };
 
   const content = (
-    <div id="sidebar-container" className="flex h-full w-64 flex-col border-r border-neutral-800 bg-black text-white select-none">
-      <div id="sidebar-brand" className="flex h-16 items-center gap-3 border-b border-neutral-800 px-5">
-        <div className="flex h-7 w-7 items-center justify-center bg-white text-xs font-black tracking-tighter text-black">
-          IP
-        </div>
-        <div className="flex flex-col">
-          <span className="font-mono text-sm font-bold tracking-tight text-neutral-100 uppercase">IPTV PROXY</span>
-          <span className="font-mono text-[10px] tracking-wide text-neutral-500">CORE ORCHESTRATION</span>
-        </div>
+    <div className="flex h-full w-64 flex-col bg-card text-card-foreground">
+      <div className="flex h-16 items-center justify-between px-4">
+        <Link href="/dashboard" className="flex min-w-0 items-center gap-3" onClick={() => setMobileOpen?.(false)}>
+          <div className="grid size-9 shrink-0 place-items-center rounded-lg bg-primary text-sm font-bold text-primary-foreground">IP</div>
+          <div className="min-w-0">
+            <div className="truncate text-sm font-semibold">IPTV Proxy</div>
+            <div className="truncate text-xs text-muted-foreground">Administration</div>
+          </div>
+        </Link>
+        <Button variant="ghost" size="icon" className="md:hidden" onClick={() => setMobileOpen?.(false)} aria-label="Close navigation">
+          <X className="size-4" />
+        </Button>
       </div>
 
-      <nav id="sidebar-nav" className="flex-1 space-y-1 px-3 py-4 font-mono text-xs">
-        <div className="px-2 py-1 text-[10px] font-semibold tracking-wider text-neutral-500 uppercase">
-          MANAGEMENT
-        </div>
-        {navItems.map((item) => {
-          const Icon = item.icon;
-          const isActive = pathname === item.href || pathname.startsWith(`${item.href}/`);
-          return (
-            <Link
-              key={item.href}
-              href={item.href}
-              id={`nav-link-${item.name.toLowerCase().replace(/\s+/g, '-')}`}
-              onClick={() => setMobileOpen?.(false)}
-              className={`flex items-center gap-3 rounded-none border px-3 py-2.5 text-xs transition-colors ${
-                isActive
-                  ? 'border-neutral-700 bg-neutral-900 font-semibold text-white shadow-xs'
-                  : 'border-transparent text-neutral-400 hover:border-neutral-800 hover:bg-neutral-900/50 hover:text-neutral-200'
-              }`}
-            >
-              <Icon className={`h-4 w-4 ${isActive ? 'text-white' : 'text-neutral-400'}`} />
-              <span>{item.name}</span>
-            </Link>
-          );
-        })}
+      <Separator />
+
+      <nav className="flex-1 space-y-5 overflow-y-auto p-3">
+        {groups.map((group) => (
+          <div key={group.label}>
+            <div className="mb-1 px-2 text-xs font-medium text-muted-foreground">{group.label}</div>
+            <div className="space-y-1">
+              {group.items.map((item) => {
+                const Icon = item.icon;
+                const active = isActive(item.href);
+                return (
+                  <Link
+                    key={item.href}
+                    href={item.href}
+                    id={`nav-link-${item.name.toLowerCase().replace(/\s+/g, '-')}`}
+                    onClick={() => setMobileOpen?.(false)}
+                    className={cn(
+                      'flex items-center gap-3 rounded-md px-2.5 py-2 text-sm font-medium transition-colors',
+                      active
+                        ? 'bg-accent text-accent-foreground'
+                        : 'text-muted-foreground hover:bg-accent/60 hover:text-foreground',
+                    )}
+                  >
+                    <Icon className="size-4" />
+                    <span>{item.name}</span>
+                  </Link>
+                );
+              })}
+            </div>
+          </div>
+        ))}
       </nav>
 
-      <div id="sidebar-footer" className="border-t border-neutral-800 bg-neutral-950 p-3 font-mono">
-        <div className="flex items-center justify-between px-2 py-1.5">
-          <div className="flex items-center gap-2 overflow-hidden">
-            <div className="h-2 w-2 shrink-0 rounded-none bg-emerald-500" />
-            <span className="truncate font-mono text-xs text-neutral-300">
-              {user?.username || 'admin'}
-            </span>
+      <div className="p-3">
+        <Separator className="mb-3" />
+        <div className="flex items-center gap-3 rounded-lg bg-muted/60 p-2.5">
+          <div className="grid size-8 shrink-0 place-items-center rounded-full bg-background text-xs font-semibold ring-1 ring-border">
+            {(user?.username || 'A').slice(0, 1).toUpperCase()}
           </div>
-          <button
-            id="btn-logout"
-            onClick={handleLogout}
-            title="Sign out"
-            className="cursor-pointer border border-neutral-800 p-1.5 text-neutral-400 transition-colors hover:bg-neutral-900 hover:text-white"
-          >
-            <LogOut className="h-3.5 w-3.5" />
-          </button>
+          <div className="min-w-0 flex-1">
+            <div className="truncate text-sm font-medium">{user?.username || 'Administrator'}</div>
+            <div className="text-xs text-muted-foreground">Admin</div>
+          </div>
+          <Button id="btn-logout" variant="ghost" size="icon" className="size-8" onClick={() => void handleLogout()} aria-label="Sign out">
+            <LogOut className="size-4" />
+          </Button>
         </div>
       </div>
     </div>
@@ -107,19 +138,16 @@ export function Sidebar({ user, onLogout, mobileOpen, setMobileOpen }: SidebarPr
 
   return (
     <>
-      <aside className="sticky top-0 hidden h-screen shrink-0 md:flex">
-        {content}
-      </aside>
-
+      <aside className="sticky top-0 hidden h-screen shrink-0 border-r md:block">{content}</aside>
       {mobileOpen && (
-        <div className="fixed inset-0 z-50 flex md:hidden">
-          <div
-            className="fixed inset-0 bg-black/80 backdrop-blur-xs"
+        <div className="fixed inset-0 z-50 md:hidden">
+          <button
+            type="button"
+            className="absolute inset-0 bg-black/50 backdrop-blur-[2px]"
             onClick={() => setMobileOpen?.(false)}
+            aria-label="Close navigation"
           />
-          <div className="relative z-10 h-full w-64">
-            {content}
-          </div>
+          <aside className="relative h-full w-64 border-r shadow-2xl">{content}</aside>
         </div>
       )}
     </>
