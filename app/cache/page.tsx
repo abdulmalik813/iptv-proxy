@@ -185,7 +185,7 @@ export default function CachePage() {
       {error && <Alert variant="destructive"><AlertDescription className="whitespace-pre-wrap">{error}</AlertDescription></Alert>}
       {message && <Alert variant="success"><AlertDescription>{message}</AlertDescription></Alert>}
 
-      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
+      <div className="grid gap-4 sm:grid-cols-3 xl:grid-cols-5">
         <MetricCard label="Entries" value={stats.entries} icon={<Database className="size-5" />} />
         <MetricCard label="Stored data" value={formatBytes(stats.bytes)} icon={<Database className="size-5" />} />
         <MetricCard label="Auto-refresh jobs" value={stats.registeredRefreshes} icon={<RefreshCw className="size-5" />} />
