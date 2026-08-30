@@ -18,12 +18,12 @@ func (h *Handler) serveDirect(w http.ResponseWriter, r *http.Request, p provider
 	}
 	copySafeRequestHeaders(req.Header, r.Header)
 	h.trace(r.Context(), "info", "upstream.request", "Outgoing media request to IPTV provider", map[string]any{
-		"direction":    "outgoing",
-		"method":       r.Method,
-		"url":          outgoingURL,
-		"outgoingUrl":  outgoingURL,
-		"providerId":   p.ID,
-		"providerName": p.Name,
+		"direction":     "outgoing",
+		"method":        r.Method,
+		"url":           outgoingURL,
+		"outgoingUrl":   outgoingURL,
+		"providerId":    p.ID,
+		"providerName":  p.Name,
 		"providerRoute": p.Route,
 	})
 	resp, err := h.streamClient.Do(req)
