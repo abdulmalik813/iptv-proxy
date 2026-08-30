@@ -1,13 +1,13 @@
 'use client';
 
 import * as React from 'react';
-import { Database, RefreshCw, RotateCcw, Terminal } from 'lucide-react';
+import { Database, RefreshCw, RotateCcw } from 'lucide-react';
 import { AppShell } from '@/components/layout/app-shell';
 import { PageHeader } from '@/components/layout/page-header';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Card, CardContent } from '@/components/ui/card';
 import { EmptyState } from '@/components/ui/empty-state';
 import { MetricCard } from '@/components/ui/metric-card';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
@@ -39,24 +39,12 @@ interface CacheStats {
   registeredRefreshes: number;
 }
 
-interface LogItem {
-  id: string;
-  timestamp: string;
-  level: string;
-  source: string;
-  category: string;
-  message: string;
-  metadata?: Record<string, unknown> | null;
-}
-
 type CacheEnvelope = {
   success?: boolean;
   data?: CacheEntry[] | Record<string, unknown>;
   stats?: CacheStats;
   error?: string;
 };
-
-type LogEnvelope = { success?: boolean; data?: LogItem[] };
 
 function formatBytes(value: number) {
   if (!Number.isFinite(value) || value <= 0) return '0 B';
@@ -84,18 +72,9 @@ function describeEntry(entry: CacheEntry) {
   };
 }
 
-function logMeta(metadata: Record<string, unknown> | null | undefined) {
-  if (!metadata) return '';
-  return ['providerName', 'endpoint', 'action', 'status', 'bytes', 'items', 'elapsedMs']
-    .filter((key) => metadata[key] !== undefined && metadata[key] !== null && metadata[key] !== '')
-    .map((key) => `${key}=${String(metadata[key])}`)
-    .join(' · ');
-}
-
 export default function CachePage() {
   const [entries, setEntries] = React.useState<CacheEntry[]>([]);
   const [stats, setStats] = React.useState<CacheStats>({ entries: 0, bytes: 0, registeredRefreshes: 0 });
-  const [logs, setLogs] = React.useState<LogItem[]>([]);
   const [loading, setLoading] = React.useState(true);
   const [refreshingAll, setRefreshingAll] = React.useState(false);
   const [busyKey, setBusyKey] = React.useState<string | null>(null);
@@ -105,24 +84,13 @@ export default function CachePage() {
   const load = React.useCallback(async (silent = false) => {
     if (!silent) setLoading(true);
     try {
-      const [cacheResponse, logsResponse] = await Promise.all([
-        fetch(apiPath('/api/system/cache'), { cache: 'no-store' }),
-        fetch(apiPath('/api/logs?source=proxy&limit=120'), { cache: 'no-store' }),
-      ]);
+      const cacheResponse = await fetch(apiPath('/api/system/cache'), { cache: 'no-store' });
       const cachePayload = await readJson<CacheEnvelope>(cacheResponse);
-      const logsPayload = await readJson<LogEnvelope>(logsResponse);
       if (!cacheResponse.ok || !cachePayload.success) {
         throw new Error(cachePayload.error || `Unable to load cache (HTTP ${cacheResponse.status}).`);
       }
       setEntries(Array.isArray(cachePayload.data) ? cachePayload.data : []);
       setStats(cachePayload.stats || { entries: 0, bytes: 0, registeredRefreshes: 0 });
-      if (logsResponse.ok && logsPayload.success && logsPayload.data) {
-        setLogs(
-          logsPayload.data
-            .filter((item) => item.category.startsWith('cache.') || item.category.startsWith('upstream.'))
-            .slice(0, 40),
-        );
-      }
     } catch (err) {
       if (!silent) setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -188,7 +156,7 @@ export default function CachePage() {
     <AppShell>
       <PageHeader
         title="Cache"
-        description="Validated IPTV metadata cached in Redis with automatic background replacement."
+        description="Validated IPTV metadata cached in Redis with automatic background replacement. Cache activity is available in the unified Logs console."
         actions={
           <>
             <Button variant="outline" onClick={() => void load()} disabled={loading}>
@@ -268,35 +236,6 @@ export default function CachePage() {
           </CardContent>
         </Card>
       )}
-
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2"><Terminal className="size-4" />Recent cache activity</CardTitle>
-          <CardDescription>Cache and upstream events from the proxy log.</CardDescription>
-        </CardHeader>
-        <CardContent>
-          {logs.length === 0 ? (
-            <div className="text-sm text-muted-foreground">No recent cache activity.</div>
-          ) : (
-            <div className="divide-y rounded-lg border">
-              {logs.map((item) => {
-                const meta = logMeta(item.metadata);
-                return (
-                  <div key={item.id} className="p-3">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <Badge variant={item.level === 'error' ? 'destructive' : item.level === 'warning' ? 'warning' : 'secondary'}>{item.level}</Badge>
-                      <span className="text-sm font-medium">{item.message}</span>
-                    </div>
-                    <div className="mt-1 text-xs text-muted-foreground">
-                      {new Date(item.timestamp).toLocaleString()}{meta ? ` · ${meta}` : ''}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </CardContent>
-      </Card>
     </AppShell>
   );
 }
