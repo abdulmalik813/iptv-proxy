@@ -1,5 +1,6 @@
 import type {Metadata} from 'next';
-import './globals.css'; // Global styles
+import './globals.css';
+import { UiRouteBridge } from '@/components/ui-route-bridge';
 
 export const metadata: Metadata = {
   title: 'IPTV Proxy - Management & Orchestration',
@@ -19,7 +20,10 @@ export const metadata: Metadata = {
 export default function RootLayout({children}: {children: React.ReactNode}) {
   return (
     <html lang="en">
-      <body suppressHydrationWarning>{children}</body>
+      <body suppressHydrationWarning>
+        <UiRouteBridge />
+        {children}
+      </body>
     </html>
   );
 }
