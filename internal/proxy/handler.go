@@ -18,17 +18,16 @@ import (
 
 const maxHLSPlaylistBytes = 8 << 20
 
+// Only shared, catalog-sized Xtream responses belong in Redis. Per-item detail,
+// short EPG and category-filtered calls are intentionally proxied directly so
+// ordinary browsing cannot create hundreds of persistent cache entries.
 var cacheablePlayerActions = map[string]bool{
 	"get_live_categories":   true,
 	"get_live_streams":      true,
 	"get_vod_categories":    true,
 	"get_vod_streams":       true,
-	"get_vod_info":          true,
 	"get_series_categories": true,
 	"get_series":            true,
-	"get_series_info":       true,
-	"get_short_epg":         true,
-	"get_simple_data_table": true,
 }
 
 var supportedEndpoints = map[string]bool{
@@ -250,13 +249,28 @@ func buildUpstreamURL(resolved routing.Resolved, r *http.Request) (*url.URL, str
 
 func isCacheable(endpoint string, q url.Values) bool {
 	switch endpoint {
-	case "get.php", "xmltv.php":
-		return true
+	case "xmltv.php":
+		return hasOnlyQueryKeys(q, "username", "password")
+	case "get.php":
+		return hasOnlyQueryKeys(q, "username", "password", "type", "output")
 	case "player_api.php":
-		return cacheablePlayerActions[q.Get("action")]
+		return cacheablePlayerActions[q.Get("action")] && hasOnlyQueryKeys(q, "username", "password", "action")
 	default:
 		return false
 	}
+}
+
+func hasOnlyQueryKeys(q url.Values, allowed ...string) bool {
+	allowedSet := make(map[string]struct{}, len(allowed))
+	for _, key := range allowed {
+		allowedSet[key] = struct{}{}
+	}
+	for key := range q {
+		if _, ok := allowedSet[key]; !ok {
+			return false
+		}
+	}
+	return true
 }
 
 func shouldMultiplexLive(r *http.Request, endpoint string, target *url.URL) bool {
