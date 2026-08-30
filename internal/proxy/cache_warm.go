@@ -52,11 +52,8 @@ func (h *Handler) WarmAllCache(ctx context.Context) WarmResult {
 
 func standardWarmSpecs() []warmSpec {
 	return []warmSpec{
-		{endpoint: "player_api.php", action: "get_live_categories"},
 		{endpoint: "player_api.php", action: "get_live_streams"},
-		{endpoint: "player_api.php", action: "get_vod_categories"},
 		{endpoint: "player_api.php", action: "get_vod_streams"},
-		{endpoint: "player_api.php", action: "get_series_categories"},
 		{endpoint: "player_api.php", action: "get_series"},
 		{endpoint: "xmltv.php"},
 		{endpoint: "get.php", query: url.Values{"type": {"m3u_plus"}, "output": {"ts"}}},
