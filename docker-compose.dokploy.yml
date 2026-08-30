@@ -28,7 +28,7 @@ services:
       net.ipv4.ip_forward: "1"
       net.ipv4.conf.all.src_valid_mark: "1"
     healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:3000/ui/api/health >/dev/null && curl -fsS http://127.0.0.1:8080/health >/dev/null"]
+      test: ["CMD-SHELL", "UI_PATH=$$(printf '%s' \"$$UI_URL\" | sed -E 's#^[^:]+://[^/]+##; s#/$##'); curl -fsS \"http://127.0.0.1:3000$${UI_PATH}/api/health\" >/dev/null && curl -fsS http://127.0.0.1:8080/health >/dev/null"]
       interval: 30s
       timeout: 5s
       retries: 3
