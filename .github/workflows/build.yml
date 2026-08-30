@@ -1,4 +1,4 @@
-name: Build and Push GHCR
+name: Build and Deploy
 
 on:
   push:
@@ -11,15 +11,15 @@ permissions:
   packages: write
 
 concurrency:
-  group: ghcr-${{ github.ref }}
+  group: build-deploy-${{ github.ref }}
   cancel-in-progress: true
 
 env:
   IMAGE_NAME: ghcr.io/${{ github.repository }}
 
 jobs:
-  build-and-push:
-    name: Build and Push
+  build-and-deploy:
+    name: Build, Push, and Deploy
     runs-on: ubuntu-latest
 
     steps:
@@ -47,3 +47,25 @@ jobs:
             ${{ env.IMAGE_NAME }}:${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Validate Dokploy webhook secret
+        env:
+          DOKPLOY_DEPLOY_WEBHOOK: ${{ secrets.DOKPLOY_DEPLOY_WEBHOOK }}
+        run: |
+          if [ -z "$DOKPLOY_DEPLOY_WEBHOOK" ]; then
+            echo "DOKPLOY_DEPLOY_WEBHOOK GitHub Actions secret is not configured."
+            exit 1
+          fi
+
+      - name: Deploy with Dokploy webhook
+        env:
+          DOKPLOY_DEPLOY_WEBHOOK: ${{ secrets.DOKPLOY_DEPLOY_WEBHOOK }}
+        run: |
+          curl --fail-with-body \
+            --silent \
+            --show-error \
+            --retry 3 \
+            --retry-delay 3 \
+            --max-time 60 \
+            -X POST \
+            "$DOKPLOY_DEPLOY_WEBHOOK"
