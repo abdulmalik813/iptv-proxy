@@ -27,9 +27,10 @@ const (
 )
 
 var (
-	ErrCacheUnavailable          = errors.New("cache unavailable; refill started")
-	ErrReplacementInProgress     = errors.New("cache replacement already in progress")
+	ErrCacheUnavailable           = errors.New("cache unavailable; refill started")
+	ErrReplacementInProgress      = errors.New("cache replacement already in progress")
 	ErrSuspiciousEmptyReplacement = errors.New("provider returned an empty catalog; existing non-empty cache was preserved")
+	releaseLockScript             = redis.NewScript(`if redis.call("GET", KEYS[1]) == ARGV[1] then return redis.call("DEL", KEYS[1]) else return 0 end`)
 )
 
 type Response struct {
@@ -86,6 +87,10 @@ type entryMeta struct {
 	ItemCountKnown bool  `json:"item_count_known,omitempty"`
 }
 
+type fetchSpec struct {
+	Spec
+}
+
 type manifest struct {
 	Status      int
 	ContentType string
@@ -127,10 +132,6 @@ type Event struct {
 }
 
 type EventSink func(Event)
-
-type fetchSpec struct {
-	Spec
-}
 
 type Manager struct {
 	client *redis.Client
@@ -179,23 +180,25 @@ func (m *Manager) GetOrFetch(ctx context.Context, spec Spec) (Response, bool, er
 	if err := validateSpec(spec); err != nil {
 		return Response{}, false, err
 	}
-	m.register(spec)
 
 	cached, currentManifest, found, err := m.get(ctx, spec.Key)
 	if err != nil {
 		return Response{}, false, err
 	}
+	activeSpec := m.registerIfAbsent(spec)
 	if found {
-		m.scheduleFromMeta(spec, currentManifest.Meta)
+		m.scheduleFromMeta(activeSpec, currentManifest.Meta)
 		return cached, true, nil
 	}
 
-	m.refillMissing(spec)
+	m.refillMissing(activeSpec)
 	return Response{}, false, ErrCacheUnavailable
 }
 
 // Register restores the runtime refresh job for an already persisted entry
-// without fetching or replacing the active value.
+// without fetching or replacing the active value. The persisted descriptor is
+// authoritative after a restart, so Register deliberately replaces any
+// temporary in-memory recipe for the same key.
 func (m *Manager) Register(ctx context.Context, spec Spec) error {
 	spec = spec.normalized()
 	if err := validateSpec(spec); err != nil {
@@ -227,8 +230,7 @@ func (m *Manager) Warm(ctx context.Context, spec Spec) error {
 	if err := validateSpec(spec); err != nil {
 		return err
 	}
-	m.register(spec)
-	return m.replaceWithSpec(ctx, spec, "warm")
+	return m.replaceWithSpec(ctx, m.registerIfAbsent(spec), "warm")
 }
 
 func (m *Manager) RefreshNow(ctx context.Context, key string) error {
@@ -267,10 +269,11 @@ func (m *Manager) refillMissing(spec Spec) {
 		defer cancel()
 
 		opID := newID()
-		if !m.acquire(ctx, spec, "fill", opID) {
+		locked, err := m.acquire(ctx, spec, "fill", opID)
+		if err != nil || !locked {
 			return
 		}
-		defer m.release(spec.Key)
+		defer m.release(spec.Key, opID)
 
 		if _, found, err := m.loadManifest(ctx, spec.Key); err == nil && found {
 			return
@@ -307,10 +310,14 @@ func (m *Manager) replaceWithSpec(ctx context.Context, spec Spec, operation stri
 	replaceCtx, cancel := context.WithTimeout(ctx, fetchTimeout)
 	defer cancel()
 
-	if !m.acquire(replaceCtx, spec, operation, opID) {
+	locked, err := m.acquire(replaceCtx, spec, operation, opID)
+	if err != nil {
+		return err
+	}
+	if !locked {
 		return ErrReplacementInProgress
 	}
-	defer m.release(spec.Key)
+	defer m.release(spec.Key, opID)
 
 	oldManifest, oldFound, err := m.loadManifest(replaceCtx, spec.Key)
 	if err != nil {
@@ -350,6 +357,16 @@ func (m *Manager) register(spec Spec) {
 	m.mu.Unlock()
 }
 
+func (m *Manager) registerIfAbsent(spec Spec) Spec {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if existing, ok := m.specs[spec.Key]; ok {
+		return existing.Spec
+	}
+	m.specs[spec.Key] = fetchSpec{Spec: spec}
+	return spec
+}
+
 func (m *Manager) scheduleFromMeta(spec Spec, meta entryMeta) {
 	threshold := time.Duration(float64(spec.TTL) * refreshThreshold)
 	remaining := time.Until(time.Unix(meta.ExpiresAt, 0))
@@ -365,7 +382,6 @@ func (m *Manager) scheduleAtThreshold(spec Spec) {
 }
 
 func (m *Manager) schedule(spec Spec, delay time.Duration) {
-	m.register(spec)
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if existing := m.timers[spec.Key]; existing != nil {
@@ -385,20 +401,20 @@ func retryDelay(ttl time.Duration) time.Duration {
 	return delay
 }
 
-func (m *Manager) acquire(ctx context.Context, spec Spec, operation, opID string) bool {
+func (m *Manager) acquire(ctx context.Context, spec Spec, operation, opID string) (bool, error) {
 	locked, err := m.client.SetNX(ctx, lockKey(spec.Key), opID, lockTTL).Result()
 	if err != nil {
 		m.emit(Event{Level: "error", Category: "cache." + operation + ".lock_error", Message: "Unable to acquire cache replacement lock", Operation: operation, OperationID: opID, Key: spec.Key, Descriptor: spec.Descriptor, Error: err.Error()})
-		return false
+		return false, err
 	}
 	if !locked {
 		m.emit(Event{Level: "debug", Category: "cache." + operation + ".lock_busy", Message: "Another cache operation already owns this entry", Operation: operation, OperationID: opID, Key: spec.Key, Descriptor: spec.Descriptor})
 	}
-	return locked
+	return locked, nil
 }
 
-func (m *Manager) release(key string) {
-	_ = m.client.Del(context.Background(), lockKey(key)).Err()
+func (m *Manager) release(key, opID string) {
+	_ = releaseLockScript.Run(context.Background(), m.client, []string{lockKey(key)}, opID).Err()
 }
 
 func lockKey(key string) string {
