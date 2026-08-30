@@ -1,5 +1,5 @@
 services:
-  iptv-proxy-admin:
+  iptv-proxy:
     image: ghcr.io/abdulmalik813/iptv-proxy:latest
     pull_policy: always
     restart: unless-stopped
