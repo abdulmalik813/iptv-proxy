@@ -31,7 +31,12 @@ func (h *Handler) serveCached(w http.ResponseWriter, r *http.Request, p provider
 			"action":       upstreamURL.Query().Get("action"),
 			"error":        err.Error(),
 		})
-		http.Error(w, err.Error(), http.StatusBadGateway)
+		status := http.StatusBadGateway
+		if errors.Is(err, cachepkg.ErrCacheUnavailable) {
+			status = http.StatusServiceUnavailable
+			w.Header().Set("Retry-After", "2")
+		}
+		http.Error(w, err.Error(), status)
 		return
 	}
 
