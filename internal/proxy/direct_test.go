@@ -11,21 +11,31 @@ import (
 	"github.com/abdulmalik813/iptv-proxy/internal/routing"
 )
 
-func TestBuildUpstreamURLTimeshiftPath(t *testing.T) {
-	p := provider.Provider{
+func testProvider() provider.Provider {
+	return provider.Provider{
 		Host:             "http://provider.test",
-		LocalUsername:    "local",
-		LocalPassword:    "secret",
 		UpstreamUsername: "up",
 		UpstreamPassword: "pass",
+		Users: []provider.User{
+			{ID: "user-a", Username: "local", Password: "secret", Enabled: 1},
+			{ID: "user-b", Username: "family", Password: "family-pass", Enabled: 1},
+			{ID: "disabled", Username: "disabled", Password: "nope", Enabled: 0},
+		},
 	}
+}
+
+func TestBuildUpstreamURLTimeshiftPath(t *testing.T) {
+	p := testProvider()
 	r := httptest.NewRequest(http.MethodGet, "http://proxy/timeshift/local/secret/60/2026-08-30:01-00/123.ts", nil)
-	target, endpoint, err := buildUpstreamURL(routing.Resolved{Provider: p, RemainingPath: r.URL.Path}, r)
+	target, endpoint, user, err := buildUpstreamURL(routing.Resolved{Provider: p, RemainingPath: r.URL.Path}, r)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if endpoint != "timeshift" {
 		t.Fatalf("endpoint=%q", endpoint)
+	}
+	if user.ID != "user-a" {
+		t.Fatalf("user=%q", user.ID)
 	}
 	want := "/timeshift/up/pass/60/2026-08-30:01-00/123.ts"
 	if target.Path != want {
@@ -33,16 +43,34 @@ func TestBuildUpstreamURLTimeshiftPath(t *testing.T) {
 	}
 }
 
-func TestBuildUpstreamURLStreamingTimeshiftQuery(t *testing.T) {
-	p := provider.Provider{
-		Host:             "http://provider.test",
-		LocalUsername:    "local",
-		LocalPassword:    "secret",
-		UpstreamUsername: "up",
-		UpstreamPassword: "pass",
+func TestBuildUpstreamURLAcceptsSecondProviderUser(t *testing.T) {
+	p := testProvider()
+	r := httptest.NewRequest(http.MethodGet, "http://proxy/player_api.php?username=family&password=family-pass&action=get_vod_streams", nil)
+	target, endpoint, user, err := buildUpstreamURL(routing.Resolved{Provider: p, RemainingPath: r.URL.Path}, r)
+	if err != nil {
+		t.Fatal(err)
 	}
+	if endpoint != "player_api.php" || user.ID != "user-b" {
+		t.Fatalf("endpoint=%q user=%q", endpoint, user.ID)
+	}
+	if target.Query().Get("username") != "up" || target.Query().Get("password") != "pass" {
+		t.Fatalf("upstream credentials were not rewritten: %v", target.Query())
+	}
+}
+
+func TestBuildUpstreamURLRejectsDisabledProviderUser(t *testing.T) {
+	p := testProvider()
+	r := httptest.NewRequest(http.MethodGet, "http://proxy/player_api.php?username=disabled&password=nope", nil)
+	_, _, _, err := buildUpstreamURL(routing.Resolved{Provider: p, RemainingPath: r.URL.Path}, r)
+	if err == nil {
+		t.Fatal("expected disabled provider user to be rejected")
+	}
+}
+
+func TestBuildUpstreamURLStreamingTimeshiftQuery(t *testing.T) {
+	p := testProvider()
 	r := httptest.NewRequest(http.MethodGet, "http://proxy/streaming/timeshift.php?username=local&password=secret&stream=123&duration=60", nil)
-	target, _, err := buildUpstreamURL(routing.Resolved{Provider: p, RemainingPath: r.URL.Path}, r)
+	target, _, _, err := buildUpstreamURL(routing.Resolved{Provider: p, RemainingPath: r.URL.Path}, r)
 	if err != nil {
 		t.Fatal(err)
 	}
