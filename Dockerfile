@@ -47,6 +47,7 @@ ENV REDIS_ADDR=redis:6379
 ENV VPN_BYPASS_TCP_PORTS=3000,8080
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    bash \
     ca-certificates \
     curl \
     gnupg \
@@ -85,6 +86,7 @@ COPY docker/entrypoint.sh /usr/local/bin/iptv-proxy-entrypoint
 RUN chmod +x /usr/local/bin/iptv-proxy-entrypoint /usr/local/bin/iptv-go-proxy
 
 EXPOSE 3000 8080
+STOPSIGNAL SIGTERM
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
   CMD UI_PATH="$(printf '%s' "$UI_URL" | sed -E 's#^[^:]+://[^/]+##; s#/$##')"; curl -fsS "http://127.0.0.1:3000${UI_PATH}/api/health" >/dev/null && curl -fsS http://127.0.0.1:8080/health >/dev/null || exit 1
