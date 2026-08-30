@@ -21,6 +21,9 @@ interface ProviderTestData {
   authenticated: boolean;
   elapsedMs: number;
   testedAt: string;
+  upstreamStatus?: number;
+  rawResponse?: string;
+  rawContentType?: string;
   account?: {
     username: string | null;
     status: string | null;
@@ -65,22 +68,18 @@ function display(value: unknown) {
 
 async function parseResponse(response: Response): Promise<Record<string, unknown>> {
   const raw = await response.text();
-  const contentType = response.headers.get('content-type') || '';
   if (!raw) return {};
-
-  if (contentType.includes('application/json')) {
-    try {
-      return JSON.parse(raw) as Record<string, unknown>;
-    } catch {
-      return { success: false, error: raw };
-    }
-  }
-
   try {
     return JSON.parse(raw) as Record<string, unknown>;
   } catch {
     return { success: false, error: raw };
   }
+}
+
+function isHtml(data: ProviderTestData | null) {
+  if (!data?.rawResponse) return false;
+  const contentType = (data.rawContentType || '').toLowerCase();
+  return contentType.includes('html') || /^\s*<!doctype html|^\s*<html[\s>]/i.test(data.rawResponse);
 }
 
 export default function ProviderTestsPage() {
@@ -134,12 +133,21 @@ export default function ProviderTestsPage() {
     try {
       const response = await fetch(`/api/providers/${provider.id}/test`, { method: 'POST' });
       const payload = await parseResponse(response);
+      const data = (payload.data || null) as ProviderTestData | null;
       if (!response.ok || !payload.success) {
-        throw new Error(String(payload.error || `Provider test failed with HTTP ${response.status}.`));
+        setResults((current) => ({
+          ...current,
+          [provider.id]: {
+            loading: false,
+            data,
+            error: String(payload.error || `Provider test failed with HTTP ${response.status}.`),
+          },
+        }));
+        return;
       }
       setResults((current) => ({
         ...current,
-        [provider.id]: { loading: false, data: payload.data as ProviderTestData, error: null },
+        [provider.id]: { loading: false, data, error: null },
       }));
     } catch (error) {
       setResults((current) => ({
@@ -174,7 +182,7 @@ export default function ProviderTestsPage() {
                 <FlaskConical className="h-5 w-5" /> Provider Account Tests
               </h1>
               <p className="mt-1 text-xs text-neutral-500">
-                Verify each upstream Xtream account and inspect the exact response when a provider returns JSON, HTML, or plain text.
+                JSON account data is parsed normally. HTML responses are rendered below in an isolated sandbox.
               </p>
             </div>
             <div className="flex gap-2">
@@ -196,6 +204,7 @@ export default function ProviderTestsPage() {
               const state = results[provider.id] || emptyState;
               const account = state.data?.account;
               const server = state.data?.server;
+              const htmlResponse = isHtml(state.data);
               return (
                 <section key={provider.id} className="border border-neutral-800 bg-neutral-950">
                   <div className="flex flex-col gap-3 border-b border-neutral-800 p-4 sm:flex-row sm:items-center sm:justify-between">
@@ -214,9 +223,25 @@ export default function ProviderTestsPage() {
                   </div>
 
                   {state.error && (
-                    <div className="m-4 border border-rose-900 bg-rose-950/30 p-3 text-xs text-rose-300">
-                      <div className="mb-2 flex items-center gap-2 font-bold uppercase"><XCircle className="h-4 w-4" /> Test Failed / Raw Response</div>
-                      <pre className="max-h-80 overflow-auto whitespace-pre-wrap break-all rounded-none bg-black p-3 text-[11px] leading-relaxed text-rose-200">{state.error}</pre>
+                    <div className="m-4 space-y-3 border border-rose-900 bg-rose-950/30 p-3 text-xs text-rose-300">
+                      <div className="flex items-center gap-2 font-bold uppercase"><XCircle className="h-4 w-4" /> {state.error}</div>
+                      {state.data?.rawResponse && htmlResponse && (
+                        <div className="overflow-hidden border border-neutral-700 bg-white">
+                          <div className="border-b border-neutral-300 bg-neutral-100 px-3 py-2 text-[10px] font-bold uppercase text-neutral-700">
+                            Rendered HTML Response · HTTP {state.data.upstreamStatus ?? 'N/A'} · {state.data.rawContentType || 'text/html'}
+                          </div>
+                          <iframe
+                            title={`${provider.name} upstream HTML response`}
+                            srcDoc={state.data.rawResponse}
+                            sandbox=""
+                            referrerPolicy="no-referrer"
+                            className="h-[420px] w-full bg-white"
+                          />
+                        </div>
+                      )}
+                      {state.data?.rawResponse && !htmlResponse && (
+                        <pre className="max-h-80 overflow-auto whitespace-pre-wrap break-all bg-black p-3 text-[11px] leading-relaxed text-rose-200">{state.data.rawResponse}</pre>
+                      )}
                     </div>
                   )}
 
