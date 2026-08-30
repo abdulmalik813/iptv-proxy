@@ -265,7 +265,7 @@ export default function CachePage() {
       {stats.retiredGenerations > 0 && (
         <Alert>
           <AlertDescription>
-            {stats.retiredGenerations} previous cache generation{stats.retiredGenerations === 1 ? ' is' : 's are'} waiting for active request{stats.activeReaders === 1 ? '' : 's'} to finish. Cleanup happens automatically when the last reader releases it.
+            {stats.retiredGenerations} previous generation{stats.retiredGenerations === 1 ? ' is' : 's are'} waiting for active request{stats.activeReaders === 1 ? '' : 's'} to finish. Cleanup happens automatically when the last reader releases it.
           </AlertDescription>
         </Alert>
       )}
