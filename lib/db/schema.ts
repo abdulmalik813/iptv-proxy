@@ -11,7 +11,7 @@ export interface IptvProviderUser {
   id: string;
   provider_id: string;
   username: string;
-  password: string;
+  password_hash: string;
   enabled: number;
   created_at: string;
   updated_at: string;
