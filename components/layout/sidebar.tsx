@@ -51,6 +51,8 @@ const groups = [
   },
 ];
 
+const brandIconPath = `${process.env.NEXT_PUBLIC_UI_BASE_PATH || ''}/iptv-proxy-icon.png`;
+
 export function Sidebar({ user, onLogout, mobileOpen = false, setMobileOpen }: SidebarProps) {
   const pathname = usePathname();
   const router = useRouter();
@@ -74,7 +76,7 @@ export function Sidebar({ user, onLogout, mobileOpen = false, setMobileOpen }: S
     <div className="flex h-full w-64 flex-col bg-card text-card-foreground">
       <div className="flex h-16 items-center justify-between px-4">
         <Link href="/dashboard" className="flex min-w-0 items-center gap-3" onClick={() => setMobileOpen?.(false)}>
-          <div className="grid size-9 shrink-0 place-items-center rounded-lg bg-primary text-sm font-bold text-primary-foreground">IP</div>
+          <img src={brandIconPath} alt="IPTV Proxy" className="size-10 shrink-0 rounded-xl object-contain" width={40} height={40} />
           <div className="min-w-0">
             <div className="truncate text-sm font-semibold">IPTV Proxy</div>
             <div className="truncate text-xs text-muted-foreground">Administration</div>
