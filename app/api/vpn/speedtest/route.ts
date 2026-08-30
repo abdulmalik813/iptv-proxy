@@ -61,7 +61,9 @@ export async function POST(req: NextRequest) {
     const user = await getSessionUser();
     if (!user) return NextResponse.json({ success: false, error: 'Unauthorized' }, { status: 401 });
 
-    const [downloadMbps, uploadMbps] = await Promise.all([runDownload(), runUpload()]);
+    // Run sequentially so upload and download do not compete for the same tunnel bandwidth.
+    const downloadMbps = await runDownload();
+    const uploadMbps = await runUpload();
     const data = { downloadMbps, uploadMbps, testedAt: new Date().toISOString() };
     await LogService.info('vpn', 'speedtest', `VPN egress speed test completed: ${downloadMbps} Mbps down / ${uploadMbps} Mbps up.`, data);
     return NextResponse.json({ success: true, data });
