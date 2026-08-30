@@ -1,6 +1,7 @@
 import type { Client } from '@libsql/client';
 import bcrypt from 'bcryptjs';
 import crypto from 'crypto';
+import { hashProviderPassword, isProviderPasswordHash } from '../auth/provider-password';
 
 async function migrationApplied(db: Client, version: number): Promise<boolean> {
   const result = await db.execute({
@@ -189,6 +190,72 @@ export async function runMigrations(db: Client): Promise<void> {
     }
 
     await recordMigration(db, 3, 'provider_users_and_session_version');
+  }
+
+  if (!(await migrationApplied(db, 4))) {
+    if (!(await columnExists(db, 'provider_users', 'password_hash'))) {
+      await db.execute('ALTER TABLE provider_users ADD COLUMN password_hash TEXT;');
+    }
+
+    const userRows = await db.execute('SELECT id, password, password_hash FROM provider_users');
+    for (const row of userRows.rows) {
+      const id = String(row.id);
+      const plaintext = String(row.password || '');
+      const existingHash = String(row.password_hash || '');
+      const passwordHash = isProviderPasswordHash(existingHash)
+        ? existingHash
+        : plaintext
+          ? hashProviderPassword(plaintext)
+          : '';
+      if (passwordHash) {
+        await db.execute({
+          sql: 'UPDATE provider_users SET password_hash = ?, password = ? WHERE id = ?',
+          args: [passwordHash, '', id],
+        });
+      }
+    }
+
+    await db.execute("UPDATE iptv_providers SET local_password = '' WHERE local_password != ''");
+    await db.batch([
+      `CREATE TRIGGER IF NOT EXISTS trg_provider_users_hash_insert
+       BEFORE INSERT ON provider_users
+       WHEN NEW.password_hash IS NULL OR trim(NEW.password_hash) = ''
+       BEGIN
+         SELECT RAISE(ABORT, 'provider user password_hash is required');
+       END;`,
+      `CREATE TRIGGER IF NOT EXISTS trg_provider_users_hash_update
+       BEFORE UPDATE OF password_hash ON provider_users
+       WHEN NEW.password_hash IS NULL OR trim(NEW.password_hash) = ''
+       BEGIN
+         SELECT RAISE(ABORT, 'provider user password_hash is required');
+       END;`,
+      `CREATE TRIGGER IF NOT EXISTS trg_provider_users_plaintext_insert
+       BEFORE INSERT ON provider_users
+       WHEN NEW.password != ''
+       BEGIN
+         SELECT RAISE(ABORT, 'provider user plaintext passwords are not allowed');
+       END;`,
+      `CREATE TRIGGER IF NOT EXISTS trg_provider_users_plaintext_update
+       BEFORE UPDATE OF password ON provider_users
+       WHEN NEW.password != ''
+       BEGIN
+         SELECT RAISE(ABORT, 'provider user plaintext passwords are not allowed');
+       END;`,
+      `CREATE TRIGGER IF NOT EXISTS trg_provider_local_password_insert
+       BEFORE INSERT ON iptv_providers
+       WHEN NEW.local_password != ''
+       BEGIN
+         SELECT RAISE(ABORT, 'provider local plaintext passwords are not allowed');
+       END;`,
+      `CREATE TRIGGER IF NOT EXISTS trg_provider_local_password_update
+       BEFORE UPDATE OF local_password ON iptv_providers
+       WHEN NEW.local_password != ''
+       BEGIN
+         SELECT RAISE(ABORT, 'provider local plaintext passwords are not allowed');
+       END;`,
+    ]);
+
+    await recordMigration(db, 4, 'hash_provider_client_passwords');
   }
 
   const now = new Date().toISOString();
