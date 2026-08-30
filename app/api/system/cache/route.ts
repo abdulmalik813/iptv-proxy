@@ -26,29 +26,40 @@ export async function GET() {
   }
 }
 
+// Bulk refresh: create any missing standard heavy-cache entries and safely
+// replace existing ones. This is the one admin action for the full cache set.
 export async function POST(req: NextRequest) {
   const requestError = validateMutationRequest(req);
   if (requestError) return NextResponse.json({ success: false, error: requestError }, { status: 403 });
   const user = await getSessionUser();
   if (!user) return NextResponse.json({ success: false, error: 'Unauthorized' }, { status: 401 });
-  const target = 'http://127.0.0.1:8080/internal/cache/start';
   try {
-    const response = await fetch(target, { method: 'POST', headers: headers(), signal: AbortSignal.timeout(30 * 60 * 1000) });
+    const response = await fetch('http://127.0.0.1:8080/internal/cache/start', {
+      method: 'POST',
+      headers: headers(),
+      signal: AbortSignal.timeout(30 * 60 * 1000),
+    });
     return NextResponse.json(await readJson(response), { status: response.status });
   } catch (error) {
     return NextResponse.json({ success: false, error: error instanceof Error ? error.message : String(error) }, { status: 503 });
   }
 }
 
+// Single-entry refresh only. Bulk refresh is POST above so there is no second,
+// competing "repull all" behavior.
 export async function DELETE(req: NextRequest) {
   const requestError = validateMutationRequest(req);
   if (requestError) return NextResponse.json({ success: false, error: requestError }, { status: 403 });
   const user = await getSessionUser();
   if (!user) return NextResponse.json({ success: false, error: 'Unauthorized' }, { status: 401 });
   const key = new URL(req.url).searchParams.get('key')?.trim();
-  const target = key ? `http://127.0.0.1:8080/internal/cache?key=${encodeURIComponent(key)}` : 'http://127.0.0.1:8080/internal/cache';
+  if (!key) return NextResponse.json({ success: false, error: 'Cache key is required for a single-entry refresh.' }, { status: 400 });
   try {
-    const response = await fetch(target, { method: 'DELETE', headers: headers(), signal: AbortSignal.timeout(10 * 60 * 1000) });
+    const response = await fetch(`http://127.0.0.1:8080/internal/cache?key=${encodeURIComponent(key)}`, {
+      method: 'DELETE',
+      headers: headers(),
+      signal: AbortSignal.timeout(10 * 60 * 1000),
+    });
     return NextResponse.json(await readJson(response), { status: response.status });
   } catch (error) {
     return NextResponse.json({ success: false, error: error instanceof Error ? error.message : String(error) }, { status: 503 });
