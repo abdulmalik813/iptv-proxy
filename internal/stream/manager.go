@@ -64,7 +64,9 @@ func (m *Manager) Subscribe(ctx context.Context, key string, open OpenFunc) (*Se
 		m.mu.Lock()
 		session := m.sessions[key]
 		if session == nil {
-			sessionCtx, cancel := context.WithCancel(context.Background())
+			// Preserve trace/request values from the first viewer while detaching
+			// the shared provider stream lifetime from that viewer's cancellation.
+			sessionCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 			session = &Session{
 				key:       key,
 				manager:   m,
