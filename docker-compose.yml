@@ -1,11 +1,11 @@
 services:
-  iptv-proxy-admin:
+  iptv-proxy:
     build:
       context: .
       dockerfile: Dockerfile
       args:
         UI_URL: ${UI_URL:-http://localhost:3000/ui}
-    container_name: iptv-proxy-admin
+    container_name: iptv-proxy
     restart: unless-stopped
     cap_add:
       - NET_ADMIN
