@@ -44,11 +44,11 @@ const sources = [
   'ALL',
   'auth',
   'provider',
-  'vpn_manager',
-  'vpn_wireguard',
-  'vpn_openvpn',
-  'vpn_vpngate',
-  'vpn_warp',
+  'vpn',
+  'wireguard',
+  'openvpn',
+  'vpngate',
+  'warp',
   'system',
   'proxy',
 ];
@@ -60,6 +60,16 @@ function levelVariant(level: LogLevel): 'secondary' | 'warning' | 'destructive' 
   return 'secondary';
 }
 
+function parseMetadata(value: string | null): Record<string, unknown> | null {
+  if (!value) return null;
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as Record<string, unknown> : null;
+  } catch {
+    return null;
+  }
+}
+
 function prettyMetadata(value: string | null) {
   if (!value) return null;
   try {
@@ -67,6 +77,23 @@ function prettyMetadata(value: string | null) {
   } catch {
     return value;
   }
+}
+
+function proxyTraffic(metadata: Record<string, unknown> | null) {
+  if (!metadata) return null;
+  const direction = typeof metadata.direction === 'string' ? metadata.direction : null;
+  const url = typeof metadata.url === 'string'
+    ? metadata.url
+    : typeof metadata.outgoingUrl === 'string'
+      ? metadata.outgoingUrl
+      : typeof metadata.incomingUrl === 'string'
+        ? metadata.incomingUrl
+        : null;
+  const method = typeof metadata.method === 'string' ? metadata.method : null;
+  const status = typeof metadata.status === 'number' || typeof metadata.status === 'string' ? String(metadata.status) : null;
+  const traceId = typeof metadata.traceId === 'string' ? metadata.traceId : null;
+  if (!direction && !url && !method && !status && !traceId) return null;
+  return { direction, url, method, status, traceId };
 }
 
 export default function LogsPage() {
@@ -129,7 +156,8 @@ export default function LogsPage() {
           if (sourceFilter !== 'ALL' && newLog.source !== sourceFilter) return current;
           if (searchQuery) {
             const query = searchQuery.toLowerCase();
-            if (!newLog.message.toLowerCase().includes(query) && !newLog.source.toLowerCase().includes(query)) return current;
+            const searchable = `${newLog.message} ${newLog.source} ${newLog.category} ${newLog.metadata_json || ''}`.toLowerCase();
+            if (!searchable.includes(query)) return current;
           }
           return sortOrder === 'DESC'
             ? [newLog, ...current.slice(0, 199)]
@@ -190,9 +218,12 @@ export default function LogsPage() {
     <AppShell>
       <PageHeader
         title="Logs"
-        description="Live application and proxy events with searchable historical records."
+        description="Live application events plus full incoming and outgoing proxy traffic with linked trace IDs."
         actions={
           <>
+            <Button variant={sourceFilter === 'proxy' ? 'secondary' : 'outline'} onClick={() => setSourceFilter((value) => value === 'proxy' ? 'ALL' : 'proxy')}>
+              Proxy traffic
+            </Button>
             <Button variant={isStreaming ? 'secondary' : 'outline'} onClick={() => setIsStreaming((value) => !value)}>
               <Radio className={isStreaming ? 'text-emerald-500' : ''} />
               {isStreaming ? 'Live' : 'Paused'}
@@ -216,7 +247,7 @@ export default function LogsPage() {
           <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
             <div className="relative xl:col-span-2">
               <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-              <Input value={searchQuery} onChange={(event) => setSearchQuery(event.target.value)} placeholder="Search logs" className="pl-9" />
+              <Input value={searchQuery} onChange={(event) => setSearchQuery(event.target.value)} placeholder="Search message, URL, trace ID, channel or action" className="pl-9" />
             </div>
             <Select value={levelFilter} onChange={(event) => setLevelFilter(event.target.value)} aria-label="Filter by level">
               <option value="ALL">All levels</option>
@@ -257,22 +288,37 @@ export default function LogsPage() {
             <EmptyState title="No logs found" description={hasFilters ? 'No records match the current filters.' : 'No application events have been recorded yet.'} action={hasFilters ? <Button size="sm" variant="outline" onClick={clearFilters}>Reset filters</Button> : undefined} />
           ) : (
             <div ref={logContainerRef} className="max-h-[650px] divide-y overflow-y-auto rounded-lg border">
-              {logs.map((log) => (
-                <button key={log.id} type="button" onClick={() => setSelectedLog(log)} className="flex w-full flex-col gap-2 p-3 text-left transition-colors hover:bg-muted/50 sm:flex-row sm:items-start sm:justify-between">
-                  <div className="flex min-w-0 items-start gap-3">
-                    <Badge variant={levelVariant(log.level)} className="mt-0.5 shrink-0">{log.level}</Badge>
-                    <div className="min-w-0">
-                      <div className="text-sm leading-relaxed">{log.message}</div>
-                      <div className="mt-1 flex flex-wrap items-center gap-1 text-xs text-muted-foreground">
-                        <span>{log.source}</span>
-                        <span>·</span>
-                        <span>{log.category}</span>
+              {logs.map((log) => {
+                const metadata = parseMetadata(log.metadata_json);
+                const traffic = log.source === 'proxy' ? proxyTraffic(metadata) : null;
+                return (
+                  <button key={log.id} type="button" onClick={() => setSelectedLog(log)} className="flex w-full flex-col gap-2 p-3 text-left transition-colors hover:bg-muted/50 sm:flex-row sm:items-start sm:justify-between">
+                    <div className="flex min-w-0 items-start gap-3">
+                      <Badge variant={levelVariant(log.level)} className="mt-0.5 shrink-0">{log.level}</Badge>
+                      <div className="min-w-0">
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          {traffic?.direction && (
+                            <Badge variant={traffic.direction === 'outgoing' ? 'secondary' : 'outline'}>
+                              {traffic.direction === 'outgoing' ? 'OUT' : 'IN'}
+                            </Badge>
+                          )}
+                          {traffic?.method && <span className="font-mono text-xs font-semibold">{traffic.method}</span>}
+                          {traffic?.status && <span className="font-mono text-xs">HTTP {traffic.status}</span>}
+                          <span className="text-sm leading-relaxed">{log.message}</span>
+                        </div>
+                        {traffic?.url && <div className="mt-1 break-all font-mono text-xs text-foreground/80">{traffic.url}</div>}
+                        <div className="mt-1 flex flex-wrap items-center gap-1 text-xs text-muted-foreground">
+                          <span>{log.source}</span>
+                          <span>·</span>
+                          <span>{log.category}</span>
+                          {traffic?.traceId && <><span>·</span><span className="font-mono">trace {traffic.traceId}</span></>}
+                        </div>
                       </div>
                     </div>
-                  </div>
-                  <time className="shrink-0 pl-11 text-xs text-muted-foreground sm:pl-0">{new Date(log.timestamp).toLocaleString()}</time>
-                </button>
-              ))}
+                    <time className="shrink-0 pl-11 text-xs text-muted-foreground sm:pl-0">{new Date(log.timestamp).toLocaleString()}</time>
+                  </button>
+                );
+              })}
             </div>
           )}
         </CardContent>
