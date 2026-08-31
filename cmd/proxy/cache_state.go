@@ -13,7 +13,7 @@ import (
 )
 
 const (
-	activeCacheStateTTL = 20 * time.Minute
+	activeCacheStateTTL = 2 * time.Hour
 	finalCacheStateTTL  = 7 * 24 * time.Hour
 )
 
