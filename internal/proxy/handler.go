@@ -9,7 +9,6 @@ import (
 
 	cachepkg "github.com/abdulmalik813/iptv-proxy/internal/cache"
 	proxylog "github.com/abdulmalik813/iptv-proxy/internal/logging"
-	"github.com/abdulmalik813/iptv-proxy/internal/provider"
 	"github.com/abdulmalik813/iptv-proxy/internal/routing"
 	"github.com/abdulmalik813/iptv-proxy/internal/stream"
 	"github.com/redis/go-redis/v9"
