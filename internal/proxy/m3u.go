@@ -3,9 +3,15 @@ package proxy
 import (
 	"bytes"
 	"net/url"
+	"regexp"
 	"strings"
 
 	"github.com/abdulmalik813/iptv-proxy/internal/provider"
+)
+
+var (
+	m3uEPGDouble = regexp.MustCompile(`(?i)\b(?:x-tvg-url|url-tvg)\s*=\s*"([^"]*)"`)
+	m3uEPGSingle = regexp.MustCompile(`(?i)\b(?:x-tvg-url|url-tvg)\s*=\s*'([^']*)'`)
 )
 
 func (h *Handler) rewriteM3UPlaylist(p provider.Provider, clientUser provider.User, body []byte) []byte {
@@ -13,7 +19,9 @@ func (h *Handler) rewriteM3UPlaylist(p provider.Provider, clientUser provider.Us
 	for i, rawLine := range lines {
 		line := string(rawLine)
 		trimmed := strings.TrimSpace(line)
-		if trimmed != "" && !strings.HasPrefix(trimmed, "#") {
+		if strings.HasPrefix(strings.ToUpper(trimmed), "#EXTM3U") {
+			line = h.rewriteM3UEPGAttributes(p, clientUser, line)
+		} else if trimmed != "" && !strings.HasPrefix(trimmed, "#") {
 			if rewritten, ok := h.rewriteM3UTarget(p, clientUser, trimmed); ok {
 				line = rewritten
 			}
@@ -28,46 +36,79 @@ func (h *Handler) rewriteM3UTarget(p provider.Provider, clientUser provider.User
 		return "", false
 	}
 	urlPart, pipeOptions := splitM3UPipeOptions(raw)
-	target, err := url.Parse(urlPart)
-	if err != nil || target.Scheme == "" || target.Host == "" {
+	target, ok := resolveProviderReference(p, urlPart)
+	if !ok {
 		return "", false
 	}
+	rewritten, ok := rewriteXtreamAbsoluteURL(p, clientUser, h.xtreamProviderPublicBase(p), target.String())
+	if !ok {
+		return "", false
+	}
+	return rewritten + pipeOptions, true
+}
 
-	providerBase, err := url.Parse(strings.TrimSuffix(p.Host, "/"))
+func resolveProviderReference(p provider.Provider, raw string) (*url.URL, bool) {
+	target, err := url.Parse(strings.TrimSpace(raw))
 	if err != nil {
-		return "", false
+		return nil, false
 	}
-	streamPath := target.Path
-	if basePath := strings.TrimSuffix(providerBase.Path, "/"); basePath != "" && strings.HasPrefix(streamPath, basePath+"/") {
-		streamPath = strings.TrimPrefix(streamPath, basePath)
+	providerBase, err := url.Parse(strings.TrimSuffix(p.Host, "/") + "/")
+	if err != nil || providerBase.Scheme == "" || providerBase.Host == "" {
+		return nil, false
 	}
+	if target.Scheme == "" && target.Host == "" {
+		target = providerBase.ResolveReference(target)
+	}
+	if target.Scheme == "" || target.Host == "" {
+		return nil, false
+	}
+	return target, true
+}
 
-	segments := strings.Split(strings.TrimPrefix(streamPath, "/"), "/")
-	if len(segments) == 0 {
-		return "", false
-	}
-	switch segments[0] {
-	case "live", "movie", "series", "timeshift":
-		if len(segments) < 4 {
-			return "", false
+func (h *Handler) rewriteM3UEPGAttributes(p provider.Provider, clientUser provider.User, line string) string {
+	out := []byte(line)
+	for _, expression := range []*regexp.Regexp{m3uEPGDouble, m3uEPGSingle} {
+		matches := expression.FindAllSubmatchIndex(out, -1)
+		for index := len(matches) - 1; index >= 0; index-- {
+			match := matches[index]
+			if len(match) < 4 || match[2] < 0 || match[3] < 0 {
+				continue
+			}
+			raw := string(out[match[2]:match[3]])
+			replacement := h.rewriteM3UURLList(p, clientUser, raw)
+			if replacement == raw {
+				continue
+			}
+			updated := make([]byte, 0, len(out)-(match[3]-match[2])+len(replacement))
+			updated = append(updated, out[:match[2]]...)
+			updated = append(updated, replacement...)
+			updated = append(updated, out[match[3]:]...)
+			out = updated
 		}
-		segments[1] = clientUser.Username
-		segments[2] = clientUser.ClientPassword
-		streamPath = "/" + strings.Join(segments, "/")
-	case "streaming":
-		q := target.Query()
-		if q.Get("username") == "" && q.Get("password") == "" {
-			return "", false
-		}
-		q.Set("username", clientUser.Username)
-		q.Set("password", clientUser.ClientPassword)
-		target.RawQuery = q.Encode()
-	default:
-		return "", false
 	}
+	return string(out)
+}
 
-	publicBase := strings.TrimSuffix(h.appURL, "/") + "/" + p.Route
-	return publicBase + streamPath + querySuffix(target.RawQuery) + pipeOptions, true
+func (h *Handler) rewriteM3UURLList(p provider.Provider, clientUser provider.User, raw string) string {
+	parts := strings.Split(raw, ",")
+	changed := false
+	for index, part := range parts {
+		trimmed := strings.TrimSpace(part)
+		target, ok := resolveProviderReference(p, trimmed)
+		if !ok {
+			continue
+		}
+		if replacement, ok := rewriteXtreamAbsoluteURL(p, clientUser, h.xtreamProviderPublicBase(p), target.String()); ok {
+			prefix := part[:len(part)-len(strings.TrimLeft(part, " \t"))]
+			suffix := part[len(strings.TrimRight(part, " \t")):]
+			parts[index] = prefix + replacement + suffix
+			changed = true
+		}
+	}
+	if !changed {
+		return raw
+	}
+	return strings.Join(parts, ",")
 }
 
 func splitM3UPipeOptions(raw string) (string, string) {
