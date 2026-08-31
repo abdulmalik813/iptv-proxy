@@ -156,9 +156,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	meta["clientUserId"] = clientUser.ID
 	h.trace(ctx, "debug", "request.rewrite", "Request authenticated and transparently rewritten for upstream provider", meta)
 
-	if isCacheable(endpoint, r.URL.Query()) {
-		h.trace(ctx, "debug", "cache.route", "Request routed through shared metadata cache", providerMeta(resolved.Provider, endpoint, upstreamURL))
-		h.serveCached(recorder, r, resolved.Provider, clientUser, endpoint, upstreamURL)
+	if cacheTarget, ok := cacheTargetForRequest(r, resolved.Provider, endpoint, upstreamURL); ok {
+		h.trace(ctx, "debug", "cache.route", "Request routed through shared metadata cache", providerMeta(resolved.Provider, endpoint, cacheTarget))
+		h.serveCached(recorder, r, resolved.Provider, clientUser, endpoint, cacheTarget)
 		return
 	}
 	if shouldMultiplexLive(r, endpoint, upstreamURL) {
