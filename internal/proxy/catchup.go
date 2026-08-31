@@ -196,6 +196,7 @@ func parseCatchupStart(value string) (time.Time, bool) {
 	layouts := []string{
 		"2006-01-02:15-04",
 		"2006-01-02_15-04",
+		"20060102-15",
 		"2006-01-02:15:04:05",
 		"2006-01-02:15:04",
 		"2006-01-02 15:04:05",
@@ -216,6 +217,8 @@ func catchupStartForFormat(parsed time.Time, format string) string {
 		return parsed.Format("2006-01-02:15-04")
 	case "path_underscore", "query_underscore":
 		return parsed.Format("2006-01-02_15-04")
+	case "path_compact_hour", "query_compact_hour":
+		return parsed.Format("20060102-15")
 	case "path_colon_seconds", "query_colon_seconds":
 		return parsed.Format("2006-01-02:15:04:05")
 	case "query_sql":
@@ -274,9 +277,9 @@ func originalCatchupFormat(descriptor catchupDescriptor) string {
 	}
 	var formats []string
 	if descriptor.layout == "path" {
-		formats = []string{"path_colon_dash", "path_underscore", "path_colon_seconds"}
+		formats = []string{"path_colon_dash", "path_underscore", "path_compact_hour", "path_colon_seconds"}
 	} else {
-		formats = []string{"query_underscore", "query_sql", "query_colon_dash", "query_colon_seconds"}
+		formats = []string{"query_underscore", "query_sql", "query_colon_dash", "query_compact_hour", "query_colon_seconds"}
 	}
 	for _, format := range formats {
 		if descriptor.start == catchupStartForFormat(parsed, format) {
@@ -294,10 +297,12 @@ func buildCatchupCandidates(target *url.URL, preferred string) ([]catchupCandida
 	standard := []string{
 		"path_colon_dash",
 		"path_underscore",
+		"path_compact_hour",
 		"path_colon_seconds",
 		"query_underscore",
 		"query_sql",
 		"query_colon_dash",
+		"query_compact_hour",
 		"query_colon_seconds",
 	}
 	candidates := make([]catchupCandidate, 0, len(standard)+2)
