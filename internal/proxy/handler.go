@@ -143,6 +143,27 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Xtream clients are inconsistent about GET versus POST. Smarters and a
+	// number of compatible apps send the login/player API as a form body. Merge
+	// that form into the request query before authentication/routing so the rest
+	// of the proxy has one canonical representation.
+	remainingEndpoint := strings.Split(strings.TrimPrefix(resolved.RemainingPath, "/"), "/")[0]
+	if isMetadataEndpoint(remainingEndpoint) && r.Method == http.MethodPost {
+		values, valuesErr := xtreamRequestValues(r)
+		if valuesErr != nil {
+			h.trace(ctx, "warning", "request.rewrite", "Xtream form request could not be parsed", map[string]any{
+				"providerId":   resolved.Provider.ID,
+				"providerName": resolved.Provider.Name,
+				"endpoint":     remainingEndpoint,
+				"incomingUrl":  incomingURL,
+				"error":        valuesErr.Error(),
+			})
+			http.Error(recorder, valuesErr.Error(), http.StatusBadRequest)
+			return
+		}
+		r.URL.RawQuery = values.Encode()
+	}
+
 	upstreamURL, endpoint, clientUser, err := buildUpstreamURL(resolved, r)
 	if err != nil {
 		h.trace(ctx, "warning", "request.rewrite", "IPTV request validation or rewrite failed", map[string]any{
@@ -167,6 +188,11 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if isCacheable(endpoint, r.URL.Query()) {
 		h.trace(ctx, "debug", "cache.route", "Request routed through metadata cache", providerMeta(resolved.Provider, endpoint, upstreamURL))
 		h.serveCached(recorder, r, resolved.Provider, clientUser, endpoint, upstreamURL)
+		return
+	}
+	if isMetadataEndpoint(endpoint) {
+		h.trace(ctx, "debug", "metadata.route", "Request routed through direct metadata compatibility proxy", providerMeta(resolved.Provider, endpoint, upstreamURL))
+		h.serveDirectMetadata(recorder, r, resolved, clientUser, endpoint, upstreamURL)
 		return
 	}
 	if shouldMultiplexLive(r, endpoint, upstreamURL) {
