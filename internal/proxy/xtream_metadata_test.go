@@ -90,7 +90,7 @@ func TestRewriteXtreamBootstrapPreservesProviderRoute(t *testing.T) {
 	}
 }
 
-func TestDirectPlayerAPIAccountAliasNeverLeaksUpstreamCredentials(t *testing.T) {
+func TestTransparentPlayerAPIAccountAliasNeverLeaksUpstreamCredentials(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/plain")
 		_, _ = io.WriteString(w, `{"user_info":{"username":"UPSTREAM","password":"UPSTREAM-PASS","auth":1,"status":"Active"},"server_info":{"url":"http://provider.invalid","timezone":"UTC"}}`)
@@ -99,8 +99,8 @@ func TestDirectPlayerAPIAccountAliasNeverLeaksUpstreamCredentials(t *testing.T) 
 
 	target, _ := url.Parse(upstream.URL + "/player_api.php?username=UPSTREAM&password=UPSTREAM-PASS&action=get_account_info")
 	h := &Handler{
-		appURL:         "https://iptv.example.test",
-		metadataClient: upstream.Client(),
+		appURL:       "https://iptv.example.test",
+		streamClient: upstream.Client(),
 	}
 	resolved := routing.Resolved{
 		Provider:  provider.Provider{ID: "provider-1", Name: "Provider"},
@@ -110,7 +110,7 @@ func TestDirectPlayerAPIAccountAliasNeverLeaksUpstreamCredentials(t *testing.T) 
 	r := httptest.NewRequest(http.MethodGet, "https://iptv.example.test/player_api.php?username=local-user&password=local-pass&action=get_account_info", nil)
 	w := httptest.NewRecorder()
 
-	h.serveDirectMetadata(w, r, resolved, clientUser, "player_api.php", target)
+	h.serveTransparent(w, r, resolved, clientUser, "player_api.php", target)
 	resp := w.Result()
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
