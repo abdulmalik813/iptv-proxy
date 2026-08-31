@@ -165,3 +165,9 @@ func buildTransparentUpstreamURL(resolved routing.Resolved, r *http.Request) (*u
 	base.RawQuery = q.Encode()
 	return base, endpoint, selectedUser, nil
 }
+
+// Keep the historical helper name for package-level tests and internal callers
+// while the redesign migrates the implementation behind it.
+func buildUpstreamURL(resolved routing.Resolved, r *http.Request) (*url.URL, string, provider.User, error) {
+	return buildTransparentUpstreamURL(resolved, r)
+}
