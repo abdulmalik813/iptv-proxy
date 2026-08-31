@@ -75,12 +75,12 @@ func sameClientUser(left, right provider.User) bool {
 	return left.Username != "" && left.Username == right.Username
 }
 
-// buildUpstreamURL is now the transparent Xtream request translator. Instead of
-// owning a fixed list of player endpoints, it discovers the authenticated local
-// credential pair in the query/path, replaces only that pair with provider
-// credentials, preserves the rest of the path/query, and forwards future
-// authenticated Xtream-compatible routes by default.
-func buildUpstreamURL(resolved routing.Resolved, r *http.Request) (*url.URL, string, provider.User, error) {
+// buildTransparentUpstreamURL is the transparent Xtream request translator.
+// Instead of owning a fixed list of player endpoints, it discovers the
+// authenticated local credential pair in the query/path, replaces only that
+// pair with provider credentials, preserves the rest of the path/query, and
+// forwards future authenticated Xtream-compatible routes by default.
+func buildTransparentUpstreamURL(resolved routing.Resolved, r *http.Request) (*url.URL, string, provider.User, error) {
 	p := resolved.Provider
 	base, err := url.Parse(strings.TrimSuffix(p.Host, "/"))
 	if err != nil {
