@@ -34,7 +34,7 @@ var jsonArtworkKeys = map[string]bool{
 // local user, while M3U stream URLs are still personalized later at response time.
 func (h *Handler) rewriteCachedArtwork(ctx context.Context, p provider.Provider, endpoint string, body []byte) []byte {
 	switch endpoint {
-	case "player_api.php":
+	case "player_api.php", "panel_api.php":
 		return h.rewriteJSONArtwork(ctx, p, body)
 	case "get.php":
 		return h.rewriteM3UArtwork(ctx, p, body)
@@ -56,15 +56,53 @@ func (h *Handler) rewriteJSONArtwork(ctx context.Context, p provider.Provider, b
 	raws := make([]string, 0)
 	collectJSONArtwork(value, "", &raws)
 	rewrites := h.storeArtworkTargets(ctx, p, raws)
-	if len(rewrites) == 0 {
+	changed := false
+	if len(rewrites) > 0 {
+		replaceJSONArtwork(value, "", rewrites)
+		changed = true
+	}
+	// direct_source is an optional provider-side shortcut. Some Xtream players
+	// prefer it over the normal stream-id route. Keeping it would make those
+	// players bypass this proxy and expose/use the upstream credentials. Clearing
+	// it is standards-compatible: clients fall back to /live, /movie or /series
+	// using the stream id and container_extension already present in the row.
+	if sanitizeXtreamDirectSources(value) {
+		changed = true
+	}
+	if !changed {
 		return body
 	}
-	replaceJSONArtwork(value, "", rewrites)
 	encoded, err := json.Marshal(value)
 	if err != nil {
 		return body
 	}
 	return encoded
+}
+
+func sanitizeXtreamDirectSources(value any) bool {
+	changed := false
+	switch typed := value.(type) {
+	case map[string]any:
+		for key, child := range typed {
+			if strings.EqualFold(key, "direct_source") {
+				if raw, ok := child.(string); ok && raw != "" {
+					typed[key] = ""
+					changed = true
+					continue
+				}
+			}
+			if sanitizeXtreamDirectSources(child) {
+				changed = true
+			}
+		}
+	case []any:
+		for _, child := range typed {
+			if sanitizeXtreamDirectSources(child) {
+				changed = true
+			}
+		}
+	}
+	return changed
 }
 
 func collectJSONArtwork(value any, key string, raws *[]string) {
