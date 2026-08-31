@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -115,10 +116,7 @@ func resolveArtworkTarget(p provider.Provider, raw string) (*url.URL, bool) {
 		}
 		target = base.ResolveReference(target)
 	}
-	if !strings.EqualFold(target.Scheme, "http") && !strings.EqualFold(target.Scheme, "https") {
-		return nil, false
-	}
-	if target.Host == "" {
+	if !safeArtworkURL(target) {
 		return nil, false
 	}
 	return target, true
@@ -130,6 +128,24 @@ func (h *Handler) artworkPublicURL(p provider.Provider, token string) string {
 		prefix += "/" + route
 	}
 	return prefix + "/_artwork/" + token
+}
+
+func artworkFailureKey(token string) string {
+	return "artwork:fail:" + token
+}
+
+func (h *Handler) rememberArtworkFailure(ctx context.Context, token, reason string) {
+	if h.redis == nil || token == "" {
+		return
+	}
+	_ = h.redis.Set(ctx, artworkFailureKey(token), reason, artworkFailureTTL).Err()
+}
+
+func (h *Handler) clearArtworkFailure(ctx context.Context, token string) {
+	if h.redis == nil || token == "" {
+		return
+	}
+	_ = h.redis.Del(ctx, artworkFailureKey(token)).Err()
 }
 
 func (h *Handler) serveArtworkToken(w http.ResponseWriter, r *http.Request, resolved routing.Resolved) {
@@ -159,29 +175,47 @@ func (h *Handler) serveArtworkToken(w http.ResponseWriter, r *http.Request, reso
 	}
 	_ = h.redis.Expire(r.Context(), key, artworkTokenTTL).Err()
 
+	if failed, _ := h.redis.Exists(r.Context(), artworkFailureKey(token)).Result(); failed > 0 {
+		h.trace(r.Context(), "debug", "artwork.negative_cache", "Skipping temporarily unavailable artwork target", map[string]any{
+			"providerId":   resolved.Provider.ID,
+			"providerName": resolved.Provider.Name,
+			"token":        token,
+		})
+		http.NotFound(w, r)
+		return
+	}
+
 	var target artworkTarget
 	if err := json.Unmarshal(encoded, &target); err != nil || target.ProviderID != resolved.Provider.ID {
 		http.NotFound(w, r)
 		return
 	}
 	parsed, err := url.Parse(target.URL)
-	if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+	if err != nil || !safeArtworkURL(parsed) {
 		http.Error(w, "invalid artwork target", http.StatusBadGateway)
 		return
 	}
-	h.serveArtwork(w, r, resolved.Provider, parsed)
+	h.serveArtwork(w, r, resolved.Provider, parsed, token)
 }
 
-func (h *Handler) serveArtwork(w http.ResponseWriter, r *http.Request, p provider.Provider, target *url.URL) {
+func (h *Handler) serveArtwork(w http.ResponseWriter, r *http.Request, p provider.Provider, target *url.URL, token string) {
 	started := time.Now()
 	outgoingURL := safeURLString(target.String())
 	req, err := http.NewRequestWithContext(r.Context(), r.Method, target.String(), nil)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadGateway)
+		h.rememberArtworkFailure(r.Context(), token, "invalid request")
+		http.Error(w, "artwork unavailable", http.StatusBadGateway)
 		return
 	}
 	copySafeRequestHeaders(req.Header, r.Header)
+	// Image fetching is intentionally not Range-driven. Fetch a small complete
+	// asset so we can validate its magic bytes and avoid forwarding an HTML error
+	// page as a poster. This also prevents client probe patterns from multiplying
+	// requests to fragile provider/CDN image hosts.
+	req.Header.Del("Range")
+	req.Header.Del("If-Range")
 	req.Header.Del("Accept-Encoding")
+	req.Header.Del("Content-Length")
 	h.trace(r.Context(), "info", "upstream.request", "Outgoing artwork request to provider/CDN", map[string]any{
 		"direction":    "outgoing",
 		"method":       r.Method,
@@ -191,8 +225,9 @@ func (h *Handler) serveArtwork(w http.ResponseWriter, r *http.Request, p provide
 		"providerName": p.Name,
 		"assetType":    "artwork",
 	})
-	resp, err := h.streamClient.Do(req)
+	resp, err := artworkHTTPClient.Do(req)
 	if err != nil {
+		h.rememberArtworkFailure(r.Context(), token, err.Error())
 		h.trace(r.Context(), "error", "upstream.error", "Outgoing artwork request failed", map[string]any{
 			"direction":    "outgoing",
 			"method":       r.Method,
@@ -204,7 +239,7 @@ func (h *Handler) serveArtwork(w http.ResponseWriter, r *http.Request, p provide
 			"elapsedMs":    time.Since(started).Milliseconds(),
 			"error":        err.Error(),
 		})
-		http.Error(w, err.Error(), http.StatusBadGateway)
+		http.Error(w, "artwork unavailable", http.StatusBadGateway)
 		return
 	}
 	defer resp.Body.Close()
@@ -221,10 +256,64 @@ func (h *Handler) serveArtwork(w http.ResponseWriter, r *http.Request, p provide
 		"contentLength": resp.ContentLength,
 		"elapsedMs":     time.Since(started).Milliseconds(),
 	})
-	copyResponseHeaders(w.Header(), resp.Header)
-	w.WriteHeader(resp.StatusCode)
-	if r.Method == http.MethodHead {
+
+	if resp.StatusCode != http.StatusOK {
+		h.rememberArtworkFailure(r.Context(), token, "HTTP "+strconv.Itoa(resp.StatusCode))
+		status := resp.StatusCode
+		if status < 400 || status >= 500 {
+			status = http.StatusBadGateway
+		}
+		http.Error(w, "artwork unavailable", status)
 		return
 	}
-	_, _ = io.Copy(w, resp.Body)
+	if r.Method == http.MethodHead {
+		h.clearArtworkFailure(r.Context(), token)
+		copyResponseHeaders(w.Header(), resp.Header)
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	if resp.ContentLength > artworkMaxBytes {
+		h.rememberArtworkFailure(r.Context(), token, "image too large")
+		http.Error(w, "artwork unavailable", http.StatusBadGateway)
+		return
+	}
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, artworkMaxBytes+1))
+	if err != nil {
+		h.rememberArtworkFailure(r.Context(), token, err.Error())
+		http.Error(w, "artwork unavailable", http.StatusBadGateway)
+		return
+	}
+	if len(body) > artworkMaxBytes {
+		h.rememberArtworkFailure(r.Context(), token, "image too large")
+		http.Error(w, "artwork unavailable", http.StatusBadGateway)
+		return
+	}
+	contentType := sniffArtworkContentType(body)
+	if contentType == "" {
+		h.rememberArtworkFailure(r.Context(), token, "invalid image payload")
+		h.trace(r.Context(), "warning", "artwork.invalid", "Artwork upstream returned a non-image payload", map[string]any{
+			"providerId":   p.ID,
+			"providerName": p.Name,
+			"outgoingUrl":  outgoingURL,
+			"bytes":        len(body),
+			"contentType":  resp.Header.Get("Content-Type"),
+		})
+		http.Error(w, "artwork unavailable", http.StatusBadGateway)
+		return
+	}
+
+	h.clearArtworkFailure(r.Context(), token)
+	copyResponseHeaders(w.Header(), resp.Header)
+	w.Header().Set("Content-Type", contentType)
+	w.Header().Set("Content-Length", strconv.Itoa(len(body)))
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	if w.Header().Get("Cache-Control") == "" {
+		w.Header().Set("Cache-Control", "public, max-age=14400")
+	}
+	if strings.HasPrefix(contentType, "image/svg") {
+		w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; sandbox")
+	}
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(body)
 }
