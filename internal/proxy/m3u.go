@@ -15,14 +15,18 @@ var (
 )
 
 func (h *Handler) rewriteM3UPlaylist(p provider.Provider, clientUser provider.User, body []byte) []byte {
+	return h.rewriteM3UPlaylistWithCredentials(p, clientXtreamCredentials(clientUser), body)
+}
+
+func (h *Handler) rewriteM3UPlaylistWithCredentials(p provider.Provider, credentials xtreamRewriteCredentials, body []byte) []byte {
 	lines := bytes.Split(body, []byte("\n"))
 	for i, rawLine := range lines {
 		line := string(rawLine)
 		trimmed := strings.TrimSpace(line)
 		if strings.HasPrefix(strings.ToUpper(trimmed), "#EXTM3U") {
-			line = h.rewriteM3UEPGAttributes(p, clientUser, line)
+			line = h.rewriteM3UEPGAttributesWithCredentials(p, credentials, line)
 		} else if trimmed != "" && !strings.HasPrefix(trimmed, "#") {
-			if rewritten, ok := h.rewriteM3UTarget(p, clientUser, trimmed); ok {
+			if rewritten, ok := h.rewriteM3UTargetWithCredentials(p, credentials, trimmed); ok {
 				line = rewritten
 			}
 		}
@@ -32,7 +36,11 @@ func (h *Handler) rewriteM3UPlaylist(p provider.Provider, clientUser provider.Us
 }
 
 func (h *Handler) rewriteM3UTarget(p provider.Provider, clientUser provider.User, raw string) (string, bool) {
-	if clientUser.Username == "" || clientUser.ClientPassword == "" {
+	return h.rewriteM3UTargetWithCredentials(p, clientXtreamCredentials(clientUser), raw)
+}
+
+func (h *Handler) rewriteM3UTargetWithCredentials(p provider.Provider, credentials xtreamRewriteCredentials, raw string) (string, bool) {
+	if credentials.PathUsername == "" || credentials.PathPassword == "" || credentials.QueryUsername == "" || credentials.QueryPassword == "" {
 		return "", false
 	}
 	urlPart, pipeOptions := splitM3UPipeOptions(raw)
@@ -44,7 +52,7 @@ func (h *Handler) rewriteM3UTarget(p provider.Provider, clientUser provider.User
 	if route := strings.Trim(p.Route, "/"); route != "" {
 		publicBase += "/" + route
 	}
-	rewritten, ok := rewriteXtreamAbsoluteURL(p, clientUser, publicBase, target.String())
+	rewritten, ok := rewriteXtreamAbsoluteURLWithCredentials(p, credentials, publicBase, target.String())
 	if !ok {
 		return "", false
 	}
@@ -107,6 +115,10 @@ func resolveProviderReference(p provider.Provider, raw string) (*url.URL, bool) 
 }
 
 func (h *Handler) rewriteM3UEPGAttributes(p provider.Provider, clientUser provider.User, line string) string {
+	return h.rewriteM3UEPGAttributesWithCredentials(p, clientXtreamCredentials(clientUser), line)
+}
+
+func (h *Handler) rewriteM3UEPGAttributesWithCredentials(p provider.Provider, credentials xtreamRewriteCredentials, line string) string {
 	out := []byte(line)
 	for _, expression := range []*regexp.Regexp{m3uEPGDouble, m3uEPGSingle} {
 		matches := expression.FindAllSubmatchIndex(out, -1)
@@ -116,7 +128,7 @@ func (h *Handler) rewriteM3UEPGAttributes(p provider.Provider, clientUser provid
 				continue
 			}
 			raw := string(out[match[2]:match[3]])
-			replacement := h.rewriteM3UURLList(p, clientUser, raw)
+			replacement := h.rewriteM3UURLListWithCredentials(p, credentials, raw)
 			if replacement == raw {
 				continue
 			}
@@ -131,6 +143,10 @@ func (h *Handler) rewriteM3UEPGAttributes(p provider.Provider, clientUser provid
 }
 
 func (h *Handler) rewriteM3UURLList(p provider.Provider, clientUser provider.User, raw string) string {
+	return h.rewriteM3UURLListWithCredentials(p, clientXtreamCredentials(clientUser), raw)
+}
+
+func (h *Handler) rewriteM3UURLListWithCredentials(p provider.Provider, credentials xtreamRewriteCredentials, raw string) string {
 	parts := strings.Split(raw, ",")
 	changed := false
 	for index, part := range parts {
@@ -139,7 +155,7 @@ func (h *Handler) rewriteM3UURLList(p provider.Provider, clientUser provider.Use
 		if !ok {
 			continue
 		}
-		if replacement, ok := rewriteXtreamAbsoluteURL(p, clientUser, h.xtreamProviderPublicBase(p), target.String()); ok {
+		if replacement, ok := rewriteXtreamAbsoluteURLWithCredentials(p, credentials, h.xtreamProviderPublicBase(p), target.String()); ok {
 			prefix := part[:len(part)-len(strings.TrimLeft(part, " \t"))]
 			suffix := part[len(strings.TrimRight(part, " \t")):]
 			parts[index] = prefix + replacement + suffix
