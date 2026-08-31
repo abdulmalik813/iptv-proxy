@@ -19,7 +19,11 @@ export async function GET() {
   const user = await getSessionUser();
   if (!user) return NextResponse.json({ success: false, error: 'Unauthorized' }, { status: 401 });
   try {
-    const response = await fetch('http://127.0.0.1:8080/internal/cache', { cache: 'no-store', headers: headers(), signal: AbortSignal.timeout(10000) });
+    // Cache status is metadata-only and should normally return quickly, but a
+    // large Redis generation publish can briefly occupy the local Redis server.
+    // Give that burst room to finish instead of surfacing AbortSignal's generic
+    // 10-second timeout while the cache itself is healthy.
+    const response = await fetch('http://127.0.0.1:8080/internal/cache', { cache: 'no-store', headers: headers(), signal: AbortSignal.timeout(30_000) });
     return NextResponse.json(await readJson(response), { status: response.status });
   } catch (error) {
     return NextResponse.json({ success: false, error: error instanceof Error ? error.message : String(error) }, { status: 503 });
