@@ -66,9 +66,13 @@ func authenticateXtreamClient(p provider.Provider, username, password string) (p
 	return provider.User{}, false
 }
 
+// providerHasClientUsername deliberately includes disabled users. If a path
+// visibly contains a username that belongs to this proxy, a bad/disabled
+// password must fail closed rather than allowing that local credential-shaped
+// pair to pass through to the upstream provider unchanged.
 func providerHasClientUsername(p provider.Provider, username string) bool {
 	for _, user := range p.Users {
-		if user.Enabled == 1 && user.Username == username {
+		if user.Username == username {
 			return true
 		}
 	}
@@ -137,7 +141,7 @@ func translateXtreamBodyCredentials(p provider.Provider, r *http.Request, select
 			}
 			user, ok := authenticateXtreamClient(p, username, password)
 			if !ok {
-				continue
+				return selected, false, errors.New("invalid IPTV credentials")
 			}
 			if err := selectUser(user); err != nil {
 				return selected, false, err
@@ -173,7 +177,7 @@ func translateXtreamBodyCredentials(p provider.Provider, r *http.Request, select
 		}
 		user, ok := authenticateXtreamClient(p, username, password)
 		if !ok {
-			continue
+			return selected, false, errors.New("invalid IPTV credentials")
 		}
 		if err := selectUser(user); err != nil {
 			return selected, false, err
@@ -243,16 +247,17 @@ func buildTransparentUpstreamURL(resolved routing.Resolved, r *http.Request) (*u
 	}
 
 	firstPathCredential := -1
-	// Search only segments that match an enabled local username before paying the
+	// Search only segments that match a known local username before paying the
 	// password-verification cost. This lets future Xtream route shapes such as
-	// /new-route/{user}/{pass}/... pass through without hard-coding new endpoints.
+	// /new-route/{user}/{pass}/... pass through without hard-coding new endpoints,
+	// while bad/disabled local credentials fail closed instead of leaking upstream.
 	for index := 0; index+1 < len(segments); index++ {
 		if !providerHasClientUsername(p, segments[index]) {
 			continue
 		}
 		user, ok := authenticateXtreamClient(p, segments[index], segments[index+1])
 		if !ok {
-			continue
+			return nil, endpoint, provider.User{}, errors.New("invalid IPTV credentials")
 		}
 		if err := selectUser(user); err != nil {
 			return nil, endpoint, provider.User{}, err
