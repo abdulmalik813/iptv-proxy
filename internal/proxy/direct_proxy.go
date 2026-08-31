@@ -171,7 +171,7 @@ func (h *Handler) serveCatchupDirect(w http.ResponseWriter, r *http.Request, p p
 					"outgoingUrl":     safeURLString(candidate.URL.String()),
 				})
 				h.writeDirectResult(w, r, p, result, detectedHLS, map[string]any{
-					"catchupCandidate": candidate.Format,
+					"catchupCandidate":  candidate.Format,
 					"catchupValidation": reason,
 				})
 				return
