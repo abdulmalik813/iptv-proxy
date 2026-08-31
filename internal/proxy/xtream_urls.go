@@ -25,7 +25,11 @@ func (h *Handler) xtreamProviderPublicBase(p provider.Provider) string {
 // unrelated query parameters. Third-party URLs and unknown provider paths are
 // deliberately left untouched; artwork has its own opaque-token proxy.
 func rewriteXtreamAbsoluteURL(p provider.Provider, clientUser provider.User, publicBase, raw string) (string, bool) {
-	if clientUser.Username == "" || clientUser.ClientPassword == "" || strings.TrimSpace(raw) == "" {
+	return rewriteXtreamAbsoluteURLWithCredentials(p, clientXtreamCredentials(clientUser), publicBase, raw)
+}
+
+func rewriteXtreamAbsoluteURLWithCredentials(p provider.Provider, credentials xtreamRewriteCredentials, publicBase, raw string) (string, bool) {
+	if credentials.PathUsername == "" || credentials.PathPassword == "" || credentials.QueryUsername == "" || credentials.QueryPassword == "" || strings.TrimSpace(raw) == "" {
 		return "", false
 	}
 	target, err := url.Parse(strings.TrimSpace(raw))
@@ -54,14 +58,14 @@ func rewriteXtreamAbsoluteURL(p provider.Provider, clientUser provider.User, pub
 	rewrittenPath := streamPath
 	switch strings.ToLower(segments[0]) {
 	case "player_api.php", "panel_api.php", "enigma2.php", "get.php", "xmltv.php":
-		q.Set("username", clientUser.Username)
-		q.Set("password", clientUser.ClientPassword)
+		q.Set("username", credentials.QueryUsername)
+		q.Set("password", credentials.QueryPassword)
 	case "live", "movie", "series", "timeshift", "hls":
 		if len(segments) < 4 || segments[1] != p.UpstreamUsername || segments[2] != p.UpstreamPassword {
 			return "", false
 		}
-		segments[1] = clientUser.Username
-		segments[2] = clientUser.ClientPassword
+		segments[1] = credentials.PathUsername
+		segments[2] = credentials.PathPassword
 		rewrittenPath = "/" + strings.Join(segments, "/")
 	case "streaming":
 		if len(segments) < 2 || !strings.EqualFold(segments[1], "timeshift.php") {
@@ -70,8 +74,8 @@ func rewriteXtreamAbsoluteURL(p provider.Provider, clientUser provider.User, pub
 		if q.Get("username") != p.UpstreamUsername || q.Get("password") != p.UpstreamPassword {
 			return "", false
 		}
-		q.Set("username", clientUser.Username)
-		q.Set("password", clientUser.ClientPassword)
+		q.Set("username", credentials.QueryUsername)
+		q.Set("password", credentials.QueryPassword)
 	default:
 		// Xtream's newer nginx rewrite permits /{user}/{pass}/{stream_id}
 		// as a live alias. Normalize provider-emitted bare URLs to canonical
@@ -79,7 +83,7 @@ func rewriteXtreamAbsoluteURL(p provider.Provider, clientUser provider.User, pub
 		if len(segments) < 3 || segments[0] != p.UpstreamUsername || segments[1] != p.UpstreamPassword {
 			return "", false
 		}
-		segments = append([]string{"live", clientUser.Username, clientUser.ClientPassword}, segments[2:]...)
+		segments = append([]string{"live", credentials.PathUsername, credentials.PathPassword}, segments[2:]...)
 		rewrittenPath = "/" + strings.Join(segments, "/")
 	}
 
@@ -98,13 +102,17 @@ func rewriteXtreamAbsoluteURL(p provider.Provider, clientUser provider.User, pub
 // name list. Only URLs on the configured provider origin and recognized Xtream
 // route shapes are changed.
 func rewriteXtreamJSONURLs(p provider.Provider, clientUser provider.User, publicBase string, body []byte) []byte {
+	return rewriteXtreamJSONURLsWithCredentials(p, clientXtreamCredentials(clientUser), publicBase, body)
+}
+
+func rewriteXtreamJSONURLsWithCredentials(p provider.Provider, credentials xtreamRewriteCredentials, publicBase string, body []byte) []byte {
 	decoder := json.NewDecoder(bytes.NewReader(body))
 	decoder.UseNumber()
 	var value any
 	if err := decoder.Decode(&value); err != nil {
 		return body
 	}
-	if !rewriteXtreamJSONValue(value, p, clientUser, publicBase) {
+	if !rewriteXtreamJSONValue(value, p, credentials, publicBase) {
 		return body
 	}
 	encoded, err := json.Marshal(value)
@@ -114,32 +122,32 @@ func rewriteXtreamJSONURLs(p provider.Provider, clientUser provider.User, public
 	return encoded
 }
 
-func rewriteXtreamJSONValue(value any, p provider.Provider, clientUser provider.User, publicBase string) bool {
+func rewriteXtreamJSONValue(value any, p provider.Provider, credentials xtreamRewriteCredentials, publicBase string) bool {
 	changed := false
 	switch typed := value.(type) {
 	case map[string]any:
 		for key, child := range typed {
 			if raw, ok := child.(string); ok {
-				if replacement, ok := rewriteXtreamAbsoluteURL(p, clientUser, publicBase, raw); ok {
+				if replacement, ok := rewriteXtreamAbsoluteURLWithCredentials(p, credentials, publicBase, raw); ok {
 					typed[key] = replacement
 					changed = true
 					continue
 				}
 			}
-			if rewriteXtreamJSONValue(child, p, clientUser, publicBase) {
+			if rewriteXtreamJSONValue(child, p, credentials, publicBase) {
 				changed = true
 			}
 		}
 	case []any:
 		for index, child := range typed {
 			if raw, ok := child.(string); ok {
-				if replacement, ok := rewriteXtreamAbsoluteURL(p, clientUser, publicBase, raw); ok {
+				if replacement, ok := rewriteXtreamAbsoluteURLWithCredentials(p, credentials, publicBase, raw); ok {
 					typed[index] = replacement
 					changed = true
 					continue
 				}
 			}
-			if rewriteXtreamJSONValue(child, p, clientUser, publicBase) {
+			if rewriteXtreamJSONValue(child, p, credentials, publicBase) {
 				changed = true
 			}
 		}
@@ -155,6 +163,7 @@ func rewriteXtreamXMLURLs(p provider.Provider, clientUser provider.User, publicB
 	if len(matches) == 0 {
 		return body
 	}
+	credentials := clientXtreamCredentials(clientUser)
 	out := append([]byte(nil), body...)
 	for index := len(matches) - 1; index >= 0; index-- {
 		match := matches[index]
@@ -162,7 +171,7 @@ func rewriteXtreamXMLURLs(p provider.Provider, clientUser provider.User, publicB
 			continue
 		}
 		raw := string(out[match[2]:match[3]])
-		replacement, ok := rewriteXtreamAbsoluteURL(p, clientUser, publicBase, raw)
+		replacement, ok := rewriteXtreamAbsoluteURLWithCredentials(p, credentials, publicBase, raw)
 		if !ok {
 			continue
 		}
