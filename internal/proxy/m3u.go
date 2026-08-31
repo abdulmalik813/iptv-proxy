@@ -37,14 +37,55 @@ func (h *Handler) rewriteM3UTarget(p provider.Provider, clientUser provider.User
 	}
 	urlPart, pipeOptions := splitM3UPipeOptions(raw)
 	target, ok := resolveProviderReference(p, urlPart)
-	if !ok {
+	if !ok || !m3uXtreamMediaTarget(p, target) {
 		return "", false
 	}
-	rewritten, ok := rewriteXtreamAbsoluteURL(p, clientUser, h.xtreamProviderPublicBase(p), target.String())
+	publicBase := strings.TrimSuffix(h.appURL, "/")
+	if route := strings.Trim(p.Route, "/"); route != "" {
+		publicBase += "/" + route
+	}
+	rewritten, ok := rewriteXtreamAbsoluteURL(p, clientUser, publicBase, target.String())
 	if !ok {
 		return "", false
 	}
 	return rewritten + pipeOptions, true
+}
+
+// m3uXtreamMediaTarget keeps M3U stream-line rewriting deliberately limited to
+// Xtream media routes. This prevents arbitrary provider-origin links embedded in
+// a playlist from silently becoming generic proxy routes while still covering
+// canonical live/VOD/series/catch-up, native HLS, and the bare live alias.
+func m3uXtreamMediaTarget(p provider.Provider, target *url.URL) bool {
+	if target == nil {
+		return false
+	}
+	providerBase, err := url.Parse(strings.TrimSuffix(p.Host, "/"))
+	if err != nil || providerBase.Host == "" || !strings.EqualFold(target.Host, providerBase.Host) {
+		return false
+	}
+	streamPath := target.Path
+	if basePath := strings.TrimSuffix(providerBase.Path, "/"); basePath != "" {
+		if streamPath == basePath {
+			return false
+		}
+		if strings.HasPrefix(streamPath, basePath+"/") {
+			streamPath = strings.TrimPrefix(streamPath, basePath)
+		}
+	}
+	segments := strings.Split(strings.TrimPrefix(streamPath, "/"), "/")
+	if len(segments) == 0 || segments[0] == "" {
+		return false
+	}
+	switch strings.ToLower(segments[0]) {
+	case "live", "movie", "series", "timeshift":
+		return len(segments) >= 4
+	case "hls":
+		return len(segments) >= 5
+	case "streaming":
+		return len(segments) >= 2 && strings.EqualFold(segments[1], "timeshift.php")
+	default:
+		return len(segments) >= 3 && segments[0] == p.UpstreamUsername && segments[1] == p.UpstreamPassword
+	}
 }
 
 func resolveProviderReference(p provider.Provider, raw string) (*url.URL, bool) {
