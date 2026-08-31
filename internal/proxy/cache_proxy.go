@@ -54,6 +54,10 @@ func (h *Handler) serveCached(w http.ResponseWriter, r *http.Request, p provider
 	if endpoint == "get.php" {
 		body = h.rewriteM3UPlaylist(p, clientUser, body)
 	}
+	// Cached bodies can be rewritten per client, so always advertise the final
+	// local representation's exact size. HEAD must return those same headers but
+	// never write the cached body itself.
+	w.Header().Set("Content-Length", fmt.Sprintf("%d", len(body)))
 	items := -1
 	if response.ItemCountKnown {
 		items = response.ItemCount
@@ -72,6 +76,9 @@ func (h *Handler) serveCached(w http.ResponseWriter, r *http.Request, p provider
 		"outgoingUrl":    safeURLString(upstreamURL.String()),
 	})
 	w.WriteHeader(response.Status)
+	if r.Method == http.MethodHead {
+		return
+	}
 	_, _ = w.Write(body)
 }
 
