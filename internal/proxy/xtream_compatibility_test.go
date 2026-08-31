@@ -37,11 +37,11 @@ func xtreamResolved(path string) routing.Resolved {
 	}
 }
 
-func TestBuildUpstreamURLSupportsXtreamMetadataSurface(t *testing.T) {
+func TestBuildTransparentUpstreamURLSupportsXtreamMetadataSurface(t *testing.T) {
 	for _, endpoint := range []string{"player_api.php", "panel_api.php", "enigma2.php", "get.php", "xmltv.php"} {
 		t.Run(endpoint, func(t *testing.T) {
 			r := &http.Request{URL: &url.URL{RawQuery: "username=client&password=secret&action=get_live_categories"}}
-			target, gotEndpoint, user, err := buildUpstreamURL(xtreamResolved("/"+endpoint), r)
+			target, gotEndpoint, user, err := buildTransparentUpstreamURL(xtreamResolved("/"+endpoint), r)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -62,9 +62,9 @@ func TestBuildUpstreamURLSupportsXtreamMetadataSurface(t *testing.T) {
 	}
 }
 
-func TestBuildUpstreamURLPreservesBareLiveShape(t *testing.T) {
+func TestBuildTransparentUpstreamURLPreservesBareLiveShape(t *testing.T) {
 	r := &http.Request{URL: &url.URL{}}
-	target, endpoint, user, err := buildUpstreamURL(xtreamResolved("/client/secret/123.ts"), r)
+	target, endpoint, user, err := buildTransparentUpstreamURL(xtreamResolved("/client/secret/123.ts"), r)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -76,9 +76,9 @@ func TestBuildUpstreamURLPreservesBareLiveShape(t *testing.T) {
 	}
 }
 
-func TestBuildUpstreamURLSupportsNativeHLSSegments(t *testing.T) {
+func TestBuildTransparentUpstreamURLSupportsNativeHLSSegments(t *testing.T) {
 	r := &http.Request{URL: &url.URL{RawQuery: "token=abc"}}
-	target, endpoint, _, err := buildUpstreamURL(xtreamResolved("/hls/client/secret/123/123_1000.ts"), r)
+	target, endpoint, _, err := buildTransparentUpstreamURL(xtreamResolved("/hls/client/secret/123/123_1000.ts"), r)
 	if err != nil {
 		t.Fatal(err)
 	}
