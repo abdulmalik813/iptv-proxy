@@ -89,7 +89,7 @@ func TestBuildCatchupCandidatesSupportsDispatcharrTimestampShapes(t *testing.T) 
 	for _, candidate := range candidates {
 		seen[candidate.Format] = true
 	}
-	for _, format := range []string{"path_colon_dash", "path_underscore", "path_colon_seconds", "query_underscore", "query_sql", "query_colon_dash", "query_colon_seconds"} {
+	for _, format := range []string{"path_colon_dash", "path_underscore", "path_compact_hour", "path_colon_seconds", "query_underscore", "query_sql", "query_colon_dash", "query_compact_hour", "query_colon_seconds"} {
 		if !seen[format] {
 			t.Fatalf("missing format %s", format)
 		}
@@ -136,8 +136,10 @@ func TestServeDirectCascadesUntilValidTimeshiftTS(t *testing.T) {
 	if resp.StatusCode != http.StatusOK || !bytes.Equal(body, payload) {
 		t.Fatalf("status=%d bytes=%d", resp.StatusCode, len(body))
 	}
-	if calls.Load() != 5 {
-		t.Fatalf("provider calls=%d want=5", calls.Load())
+	// The compact-hour candidate is intentionally tried before the SQL form;
+	// the successful SQL timestamp is therefore the sixth sequential request.
+	if calls.Load() != 6 {
+		t.Fatalf("provider calls=%d want=6", calls.Load())
 	}
 }
 
