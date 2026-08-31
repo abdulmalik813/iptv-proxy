@@ -153,18 +153,16 @@ func main() {
 		}
 		switch r.Method {
 		case http.MethodGet:
-			ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+			// Status is metadata-only. Give Redis enough room to finish a large
+			// generation write, but scan cache manifests only once for this response.
+			ctx, cancel := context.WithTimeout(r.Context(), 25*time.Second)
 			defer cancel()
 			entries, err := cacheManager.Entries(ctx)
 			if err != nil {
 				writeJSON(w, http.StatusInternalServerError, map[string]any{"success": false, "error": err.Error()})
 				return
 			}
-			stats, err := cacheManager.Stats(ctx)
-			if err != nil {
-				writeJSON(w, http.StatusInternalServerError, map[string]any{"success": false, "error": err.Error()})
-				return
-			}
+			stats := cacheManager.StatsFromEntries(entries)
 			states, err := loadCacheOperationStates(ctx, redisClient, entries)
 			if err != nil {
 				log.Printf("unable to load persisted cache operation states: %v", err)
@@ -206,7 +204,7 @@ func main() {
 			// lock still provides single-flight behavior if an automatic refresh or
 			// another manual request already owns this cache key.
 			go func(cacheKey string) {
-				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 				defer cancel()
 				if err := cacheManager.Purge(ctx, cacheKey); err != nil && err != cachepkg.ErrReplacementInProgress {
 					log.Printf("background cache refresh failed for %s: %v", cacheKey, err)
