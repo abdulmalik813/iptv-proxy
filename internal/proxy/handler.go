@@ -92,6 +92,13 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		} else if status >= 400 {
 			level = "warning"
 		}
+		// Artwork misses are expected when an upstream image is temporarily
+		// unavailable or a player still holds an expired opaque token. They are
+		// explicitly traced by the artwork handler and should not flood the main
+		// traffic console as warnings.
+		if endpoint, _ := completionMeta["endpoint"].(string); endpoint == "_artwork" && status == http.StatusNotFound {
+			level = "info"
+		}
 		completionMeta["status"] = status
 		completionMeta["bytesOut"] = recorder.bytes
 		completionMeta["elapsedMs"] = time.Since(trace.Started).Milliseconds()
@@ -100,6 +107,15 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		h.trace(ctx, level, "request.completed", "Outgoing IPTV response to client", completionMeta)
 	}()
+
+	// Browsers and embedded WebViews commonly request this automatically. It is
+	// not an Xtream call and should never enter client authentication/routing.
+	if r.URL.Path == "/favicon.ico" {
+		completionMeta["endpoint"] = "favicon.ico"
+		recorder.Header().Set("Cache-Control", "public, max-age=86400")
+		recorder.WriteHeader(http.StatusNoContent)
+		return
+	}
 
 	resolved, err := h.resolver.Resolve(ctx, r.URL.Path)
 	if err != nil {
