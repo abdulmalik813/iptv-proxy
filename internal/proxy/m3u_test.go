@@ -34,7 +34,12 @@ func TestRewriteM3UPlaylistUsesRequestingClientCredentials(t *testing.T) {
 
 func TestRewriteM3UStreamingQueryCredentials(t *testing.T) {
 	handler := &Handler{appURL: "https://iptv.example.test"}
-	p := provider.Provider{Host: "http://upstream.example", Route: "main"}
+	p := provider.Provider{
+		Host:             "http://upstream.example",
+		Route:            "main",
+		UpstreamUsername: "up",
+		UpstreamPassword: "secret",
+	}
 	clientUser := provider.User{Username: "local-user", ClientPassword: "local-pass", Enabled: 1}
 
 	rewritten, ok := handler.rewriteM3UTarget(p, clientUser, "http://upstream.example/streaming/timeshift.php?username=up&password=secret&stream=100")
