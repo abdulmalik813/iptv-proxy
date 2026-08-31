@@ -73,53 +73,9 @@ func (h *Handler) traceDirectResponse(r *http.Request, p provider.Provider, resu
 	h.trace(r.Context(), "info", "upstream.response", "Incoming media response from IPTV provider", meta)
 }
 
-func (h *Handler) serveDirect(w http.ResponseWriter, r *http.Request, p provider.Provider, target *url.URL) {
-	result, err := h.doDirectUpstream(r, p, target)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadGateway)
-		return
-	}
-
-	// Some Xtream installations expose only streaming/timeshift.php even though
-	// clients commonly request the path form. Retry only when the first response
-	// clearly says the path route is unsupported. Account/session refusals are
-	// intentionally never duplicated.
-	if (r.Method == http.MethodGet || r.Method == http.MethodHead) && shouldTryTimeshiftPHPFallback(result.resp, target) {
-		alternate, ok := timeshiftPHPAlternate(target)
-		if ok {
-			h.traceDirectResponse(r, p, result, false, map[string]any{"catchupFallback": true})
-			_ = result.resp.Body.Close()
-			h.trace(r.Context(), "warning", "catchup.fallback", "Xtream timeshift path rejected; trying PHP catch-up endpoint", map[string]any{
-				"providerId":    p.ID,
-				"providerName":  p.Name,
-				"providerRoute": p.Route,
-				"fromUrl":       safeURLString(target.String()),
-				"toUrl":         safeURLString(alternate.String()),
-				"status":        result.resp.StatusCode,
-				"contentType":   result.resp.Header.Get("Content-Type"),
-			})
-			target = alternate
-			result, err = h.doDirectUpstream(r, p, target)
-			if err != nil {
-				http.Error(w, err.Error(), http.StatusBadGateway)
-				return
-			}
-		}
-	}
+func (h *Handler) writeDirectResult(w http.ResponseWriter, r *http.Request, p provider.Provider, result directUpstreamResult, detectedHLS bool, extra map[string]any) {
 	defer result.resp.Body.Close()
-
-	detectedHLS := false
-	if r.Method != http.MethodHead && result.resp.StatusCode >= 200 && result.resp.StatusCode < 300 {
-		if shouldSniffHiddenHLS(target) {
-			detectedHLS = prepareHLSResponse(result.resp, target)
-		} else {
-			// Catch-up .ts is expected to be a finite MPEG-TS recording. Honor an
-			// explicitly requested/reported HLS response, but do not block playback
-			// by peeking into an ordinary TS archive before forwarding its first bytes.
-			detectedHLS = isHLSResponse(result.resp, target)
-		}
-	}
-	h.traceDirectResponse(r, p, result, detectedHLS, nil)
+	h.traceDirectResponse(r, p, result, detectedHLS, extra)
 
 	if r.Method == http.MethodHead {
 		copyResponseHeaders(w.Header(), result.resp.Header)
@@ -146,4 +102,165 @@ func (h *Handler) serveDirect(w http.ResponseWriter, r *http.Request, p provider
 			return
 		}
 	}
+}
+
+func (h *Handler) serveCatchupDirect(w http.ResponseWriter, r *http.Request, p provider.Provider, target *url.URL) {
+	preferred := h.preferredCatchupFormat(r.Context(), p)
+	candidates, ok := buildCatchupCandidates(target, preferred)
+	if !ok || len(candidates) == 0 {
+		http.Error(w, "invalid catch-up request", http.StatusBadRequest)
+		return
+	}
+
+	lastStatus := 0
+	var lastErr error
+	invalidSuccess := false
+	rangeHeader := r.Header.Get("Range")
+	for index, candidate := range candidates {
+		h.trace(r.Context(), "debug", "catchup.candidate", "Trying Xtream catch-up provider format", map[string]any{
+			"providerId":      p.ID,
+			"providerName":    p.Name,
+			"providerRoute":   p.Route,
+			"candidateIndex":  index,
+			"candidateFormat": candidate.Format,
+			"preferred":       preferred != "" && candidate.Format == preferred,
+			"outgoingUrl":     safeURLString(candidate.URL.String()),
+		})
+
+		result, err := h.doDirectUpstream(r, p, candidate.URL)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		status := result.resp.StatusCode
+		lastStatus = status
+
+		// Session/account failures are not format failures. Never turn them into a
+		// burst of extra provider connections by trying alternate URL spellings.
+		if isDecisiveCatchupStatus(status) {
+			h.writeDirectResult(w, r, p, result, false, map[string]any{
+				"catchupCandidate": candidate.Format,
+				"catchupDecisive":  true,
+			})
+			return
+		}
+		// Range EOF/probe responses are meaningful to video players and should be
+		// passed through rather than converted into another provider request.
+		if status == http.StatusRequestedRangeNotSatisfiable && rangeHeader != "" {
+			h.writeDirectResult(w, r, p, result, false, map[string]any{
+				"catchupCandidate": candidate.Format,
+			})
+			return
+		}
+
+		if status == http.StatusOK || status == http.StatusPartialContent {
+			accepted, detectedHLS, reason, probeErr := probeCatchupResponse(result.resp, candidate.URL, rangeHeader)
+			if probeErr != nil {
+				lastErr = probeErr
+			}
+			if accepted {
+				if r.Method == http.MethodGet {
+					h.rememberCatchupFormat(r.Context(), p, candidate.Format)
+				}
+				h.trace(r.Context(), "info", "catchup.selected", "Xtream catch-up provider format validated", map[string]any{
+					"providerId":      p.ID,
+					"providerName":    p.Name,
+					"providerRoute":   p.Route,
+					"candidateFormat": candidate.Format,
+					"validation":      reason,
+					"outgoingUrl":     safeURLString(candidate.URL.String()),
+				})
+				h.writeDirectResult(w, r, p, result, detectedHLS, map[string]any{
+					"catchupCandidate": candidate.Format,
+					"catchupValidation": reason,
+				})
+				return
+			}
+			invalidSuccess = true
+			h.traceDirectResponse(r, p, result, false, map[string]any{
+				"catchupCandidate": candidate.Format,
+				"catchupRejected":  true,
+				"rejectionReason":  reason,
+			})
+			h.trace(r.Context(), "warning", "catchup.candidate_rejected", "Xtream catch-up success response did not contain usable archive media", map[string]any{
+				"providerId":      p.ID,
+				"providerName":    p.Name,
+				"providerRoute":   p.Route,
+				"candidateFormat": candidate.Format,
+				"status":          status,
+				"reason":          reason,
+				"outgoingUrl":     safeURLString(candidate.URL.String()),
+			})
+			_ = result.resp.Body.Close()
+			continue
+		}
+
+		h.traceDirectResponse(r, p, result, false, map[string]any{
+			"catchupCandidate": candidate.Format,
+			"catchupRejected":  true,
+		})
+		_ = result.resp.Body.Close()
+	}
+
+	if invalidSuccess {
+		http.Error(w, "provider catch-up returned no valid MPEG-TS archive", http.StatusBadGateway)
+		return
+	}
+	if lastStatus >= 400 {
+		http.Error(w, "provider catch-up request failed", lastStatus)
+		return
+	}
+	if lastErr != nil {
+		http.Error(w, lastErr.Error(), http.StatusBadGateway)
+		return
+	}
+	http.Error(w, "provider catch-up unavailable", http.StatusBadGateway)
+}
+
+func (h *Handler) serveDirect(w http.ResponseWriter, r *http.Request, p provider.Provider, target *url.URL) {
+	if (r.Method == http.MethodGet || r.Method == http.MethodHead) && isXtreamCatchupTarget(target) && !isExplicitCatchupHLS(target) {
+		h.serveCatchupDirect(w, r, p, target)
+		return
+	}
+
+	result, err := h.doDirectUpstream(r, p, target)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+
+	// Explicit HLS catch-up keeps the narrow path->PHP compatibility fallback;
+	// ordinary TS catch-up is handled by the validated candidate resolver above.
+	if (r.Method == http.MethodGet || r.Method == http.MethodHead) && shouldTryTimeshiftPHPFallback(result.resp, target) {
+		alternate, ok := timeshiftPHPAlternate(target)
+		if ok {
+			h.traceDirectResponse(r, p, result, false, map[string]any{"catchupFallback": true})
+			_ = result.resp.Body.Close()
+			h.trace(r.Context(), "warning", "catchup.fallback", "Xtream timeshift path rejected; trying PHP catch-up endpoint", map[string]any{
+				"providerId":    p.ID,
+				"providerName":  p.Name,
+				"providerRoute": p.Route,
+				"fromUrl":       safeURLString(target.String()),
+				"toUrl":         safeURLString(alternate.String()),
+				"status":        result.resp.StatusCode,
+				"contentType":   result.resp.Header.Get("Content-Type"),
+			})
+			target = alternate
+			result, err = h.doDirectUpstream(r, p, target)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusBadGateway)
+				return
+			}
+		}
+	}
+
+	detectedHLS := false
+	if r.Method != http.MethodHead && result.resp.StatusCode >= 200 && result.resp.StatusCode < 300 {
+		if shouldSniffHiddenHLS(target) {
+			detectedHLS = prepareHLSResponse(result.resp, target)
+		} else {
+			detectedHLS = isHLSResponse(result.resp, target)
+		}
+	}
+	h.writeDirectResult(w, r, p, result, detectedHLS, nil)
 }
