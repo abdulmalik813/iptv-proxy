@@ -62,7 +62,7 @@ func TestBuildUpstreamURLSupportsXtreamMetadataSurface(t *testing.T) {
 	}
 }
 
-func TestBuildUpstreamURLSupportsBareLiveRewrite(t *testing.T) {
+func TestBuildUpstreamURLPreservesBareLiveShape(t *testing.T) {
 	r := &http.Request{URL: &url.URL{}}
 	target, endpoint, user, err := buildUpstreamURL(xtreamResolved("/client/secret/123.ts"), r)
 	if err != nil {
@@ -71,7 +71,7 @@ func TestBuildUpstreamURLSupportsBareLiveRewrite(t *testing.T) {
 	if endpoint != "live" || user.Username != "client" {
 		t.Fatalf("endpoint=%q user=%#v", endpoint, user)
 	}
-	if target.Path != "/base/live/UPSTREAM/UPSTREAM-PASS/123.ts" {
+	if target.Path != "/base/UPSTREAM/UPSTREAM-PASS/123.ts" {
 		t.Fatalf("bare live path=%q", target.Path)
 	}
 }
@@ -131,12 +131,12 @@ func TestRewriteXtreamAbsoluteURLCoversMetadataMediaAndBareRoutes(t *testing.T) 
 	user := provider.User{Username: "client", ClientPassword: "secret"}
 	publicBase := "https://proxy.test/trex"
 
-	cases := map[string]string{
-		"http://provider.test/base/player_api.php?username=UPSTREAM&password=UPSTREAM-PASS&action=get_series": "https://proxy.test/trex/player_api.php?action=get_series&password=secret&username=client",
-		"http://provider.test/base/live/UPSTREAM/UPSTREAM-PASS/123.ts":                                      "https://proxy.test/trex/live/client/secret/123.ts",
-		"http://provider.test/base/hls/UPSTREAM/UPSTREAM-PASS/123/segment.ts?token=x":                       "https://proxy.test/trex/hls/client/secret/123/segment.ts?token=x",
-		"http://provider.test/base/UPSTREAM/UPSTREAM-PASS/456":                                             "https://proxy.test/trex/live/client/secret/456",
-	}
+	cases := map[string]string{}
+	cases["http://provider.test/base/player_api.php?username=UPSTREAM&password=UPSTREAM-PASS&action=get_series"] = "https://proxy.test/trex/player_api.php?action=get_series&password=secret&username=client"
+	cases["http://provider.test/base/live/UPSTREAM/UPSTREAM-PASS/123.ts"] = "https://proxy.test/trex/live/client/secret/123.ts"
+	cases["http://provider.test/base/hls/UPSTREAM/UPSTREAM-PASS/123/segment.ts?token=x"] = "https://proxy.test/trex/hls/client/secret/123/segment.ts?token=x"
+	cases["http://provider.test/base/UPSTREAM/UPSTREAM-PASS/456"] = "https://proxy.test/trex/live/client/secret/456"
+
 	for raw, want := range cases {
 		got, ok := rewriteXtreamAbsoluteURL(p, user, publicBase, raw)
 		if !ok || got != want {
