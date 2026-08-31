@@ -70,8 +70,8 @@ test('cache manager has one replacement lifecycle and fail-closed cold misses', 
   assert.doesNotMatch(cache, /RefreshNow/);
   assert.match(cache, /Purge/);
   assert.match(cache, /Warm/);
-  assert.match(cache, /lockTTL\s*=\s*12 \* time\.Minute/);
-  assert.match(cache, /fetchTimeout\s*=\s*10 \* time\.Minute/);
+  assert.match(cache, /lockTTL\s*=\s*35 \* time\.Minute/);
+  assert.match(cache, /fetchTimeout\s*=\s*30 \* time\.Minute/);
 });
 
 test('cache duration zero bypasses Redis and calls the provider directly', async () => {
@@ -86,8 +86,11 @@ test('metadata cache has no fixed response-size ceiling and uses chunked generat
   assert.doesNotMatch(handler, /maxMetadataBytes/);
   assert.doesNotMatch(cacheProxy, /maxMetadataBytes/);
   assert.doesNotMatch(cacheProxy, /LimitReader/);
-  assert.match(cacheProxy, /io\.ReadAll\(resp\.Body\)/);
+  assert.match(cacheProxy, /readMetadataBodyWithProgress/);
+  assert.match(cacheProxy, /cache\.download\.progress/);
   assert.match(cacheProxy, /Header\.Del\("Accept-Encoding"\)/);
+  assert.match(handler, /metadataTransport\.DisableCompression = false/);
+  assert.match(handler, /Timeout:\s*30 \* time\.Minute/);
   assert.match(cache, /bodyChunkSize\s*=\s*8 \* 1024 \* 1024/);
   assert.match(cache, /writeGeneration/);
   assert.match(cache, /generation/);
