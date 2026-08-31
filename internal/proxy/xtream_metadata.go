@@ -147,15 +147,22 @@ func (h *Handler) serveDirectMetadata(w http.ResponseWriter, r *http.Request, re
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 && resp.Header.Get("Content-Encoding") == "" {
 		switch endpoint {
 		case "player_api.php":
-			if strings.TrimSpace(target.Query().Get("action")) == "" {
-				body = h.rewriteXtreamBootstrap(resolved, clientUser, body)
-			}
+			// Apply this to every Player API action, not only the empty-action login.
+			// rewriteXtreamBootstrap is a no-op for normal lists/details, but account
+			// aliases such as get_account_info can return user_info and otherwise leak
+			// the upstream username/password back to strict Xtream clients.
+			body = h.rewriteXtreamBootstrap(resolved, clientUser, body)
 			body = h.rewriteCachedArtwork(r.Context(), resolved.Provider, endpoint, body)
+			if json.Valid(body) {
+				w.Header().Set("Content-Type", "application/json")
+			}
 		case "get.php":
 			body = h.rewriteCachedArtwork(r.Context(), resolved.Provider, endpoint, body)
 			body = h.rewriteM3UPlaylist(resolved.Provider, clientUser, body)
+			w.Header().Set("Content-Type", "audio/x-mpegurl")
 		case "xmltv.php":
 			body = h.rewriteCachedArtwork(r.Context(), resolved.Provider, endpoint, body)
+			w.Header().Set("Content-Type", "application/xml")
 		}
 	}
 
