@@ -132,14 +132,10 @@ func TestRewriteXtreamAbsoluteURLCoversMetadataMediaAndBareRoutes(t *testing.T) 
 	publicBase := "https://proxy.test/trex"
 
 	cases := map[string]string{
-		"http://provider.test/base/player_api.php?username=UPSTREAM&password=UPSTREAM-PASS&action=get_series":
-			"https://proxy.test/trex/player_api.php?action=get_series&password=secret&username=client",
-		"http://provider.test/base/live/UPSTREAM/UPSTREAM-PASS/123.ts":
-			"https://proxy.test/trex/live/client/secret/123.ts",
-		"http://provider.test/base/hls/UPSTREAM/UPSTREAM-PASS/123/segment.ts?token=x":
-			"https://proxy.test/trex/hls/client/secret/123/segment.ts?token=x",
-		"http://provider.test/base/UPSTREAM/UPSTREAM-PASS/456":
-			"https://proxy.test/trex/live/client/secret/456",
+		"http://provider.test/base/player_api.php?username=UPSTREAM&password=UPSTREAM-PASS&action=get_series": "https://proxy.test/trex/player_api.php?action=get_series&password=secret&username=client",
+		"http://provider.test/base/live/UPSTREAM/UPSTREAM-PASS/123.ts":                                      "https://proxy.test/trex/live/client/secret/123.ts",
+		"http://provider.test/base/hls/UPSTREAM/UPSTREAM-PASS/123/segment.ts?token=x":                       "https://proxy.test/trex/hls/client/secret/123/segment.ts?token=x",
+		"http://provider.test/base/UPSTREAM/UPSTREAM-PASS/456":                                             "https://proxy.test/trex/live/client/secret/456",
 	}
 	for raw, want := range cases {
 		got, ok := rewriteXtreamAbsoluteURL(p, user, publicBase, raw)
@@ -180,7 +176,7 @@ func TestEnigma2CDATAURLsStayInsideProxy(t *testing.T) {
 }
 
 func TestSanitizeXtreamDirectSourceForcesStandardProxyPlayback(t *testing.T) {
-	value := map[string]any{"stream_id": jsonNumberForTest("123"), "direct_source": "http://provider.test/raw.ts"}
+	value := map[string]any{"stream_id": "123", "direct_source": "http://provider.test/raw.ts"}
 	if !sanitizeXtreamDirectSources(value) {
 		t.Fatal("expected direct_source to be sanitized")
 	}
@@ -188,17 +184,6 @@ func TestSanitizeXtreamDirectSourceForcesStandardProxyPlayback(t *testing.T) {
 		t.Fatalf("direct_source=%v", value["direct_source"])
 	}
 }
-
-// json.Number is intentionally kept out of the imports above except through
-// this tiny helper so the test mirrors decoded catalog values without changing
-// the production type assumptions.
-func jsonNumberForTest(raw string) interface{ String() string } {
-	return stringNumber(raw)
-}
-
-type stringNumber string
-
-func (n stringNumber) String() string { return string(n) }
 
 func TestCatchupCandidatesIncludeXtreamCompactHourTimestamp(t *testing.T) {
 	target, _ := url.Parse("http://provider.test/timeshift/u/p/60/2026-08-31:12-00/123.ts")
