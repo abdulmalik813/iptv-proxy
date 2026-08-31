@@ -125,7 +125,7 @@ func (h *Handler) isLocalProxyURL(raw string) bool {
 	return err == nil && local.Host != "" && strings.EqualFold(target.Host, local.Host)
 }
 
-func isLikelyOpaqueMediaURL(p provider.Provider, target *url.URL) bool {
+func isLikelyOpaqueMediaURL(target *url.URL) bool {
 	if target == nil || target.Host == "" || (target.Scheme != "http" && target.Scheme != "https") {
 		return false
 	}
@@ -141,8 +141,7 @@ func isLikelyOpaqueMediaURL(p provider.Provider, target *url.URL) bool {
 			return true
 		}
 	}
-	providerBase, err := url.Parse(strings.TrimSuffix(p.Host, "/"))
-	return err == nil && providerBase.Host != "" && strings.EqualFold(providerBase.Host, target.Host)
+	return false
 }
 
 func (h *Handler) rewriteOpaqueMediaURL(ctx context.Context, p provider.Provider, raw string) (string, bool) {
@@ -150,7 +149,7 @@ func (h *Handler) rewriteOpaqueMediaURL(ctx context.Context, p provider.Provider
 		return "", false
 	}
 	target, err := url.Parse(strings.TrimSpace(raw))
-	if err != nil || !isLikelyOpaqueMediaURL(p, target) {
+	if err != nil || !isLikelyOpaqueMediaURL(target) {
 		return "", false
 	}
 	replacement, err := h.storeMediaTarget(ctx, p, target)
@@ -227,8 +226,8 @@ func (h *Handler) rewriteOpaqueMediaM3U(ctx context.Context, p provider.Provider
 		if !ok || h.isLocalProxyURL(target.String()) {
 			continue
 		}
-		replacement, ok := h.rewriteOpaqueMediaURL(ctx, p, target.String())
-		if !ok {
+		replacement, err := h.storeMediaTarget(ctx, p, target)
+		if err != nil {
 			continue
 		}
 		leading := line[:len(line)-len(strings.TrimLeft(line, " \t"))]
