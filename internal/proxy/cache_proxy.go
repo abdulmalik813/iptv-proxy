@@ -55,11 +55,11 @@ func (h *Handler) serveCached(w http.ResponseWriter, r *http.Request, p provider
 	// media is wrapped behind deterministic opaque tokens without changing the
 	// exact upstream URL stored in Redis.
 	body := response.Body
-	switch endpoint {
-	case "player_api.php", "panel_api.php":
+	if endpoint == "player_api.php" || endpoint == "panel_api.php" {
 		body = rewriteXtreamJSONURLs(p, clientUser, h.xtreamProviderPublicBase(p), body)
 		body = h.rewriteOpaqueMediaJSON(r.Context(), p, body)
-	case "get.php":
+	}
+	if endpoint == "get.php" {
 		body = h.rewriteM3UPlaylist(p, clientUser, body)
 		body = h.rewriteOpaqueMediaM3U(r.Context(), p, body)
 	}
