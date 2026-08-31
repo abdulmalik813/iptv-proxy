@@ -131,26 +131,6 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Existing well-known metadata POSTs are still normalized for this first
-	// redesign step. A following step moves credential translation into the body
-	// rewriter so transparent fallback routes can preserve POST bodies verbatim.
-	remainingEndpoint := strings.Split(strings.TrimPrefix(resolved.RemainingPath, "/"), "/")[0]
-	if isMetadataEndpoint(remainingEndpoint) && r.Method == http.MethodPost {
-		values, valuesErr := xtreamRequestValues(r)
-		if valuesErr != nil {
-			h.trace(ctx, "warning", "request.rewrite", "Xtream form request could not be parsed", map[string]any{
-				"providerId":   resolved.Provider.ID,
-				"providerName": resolved.Provider.Name,
-				"endpoint":     remainingEndpoint,
-				"incomingUrl":  incomingURL,
-				"error":        valuesErr.Error(),
-			})
-			http.Error(recorder, valuesErr.Error(), http.StatusBadRequest)
-			return
-		}
-		r.URL.RawQuery = values.Encode()
-	}
-
 	upstreamURL, endpoint, clientUser, err := buildTransparentUpstreamURL(resolved, r)
 	if err != nil {
 		h.trace(ctx, "warning", "request.rewrite", "IPTV request validation or rewrite failed", map[string]any{
@@ -177,22 +157,23 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.trace(ctx, "debug", "request.rewrite", "Request authenticated and transparently rewritten for upstream provider", meta)
 
 	if isCacheable(endpoint, r.URL.Query()) {
-		h.trace(ctx, "debug", "cache.route", "Request routed through metadata cache", providerMeta(resolved.Provider, endpoint, upstreamURL))
+		h.trace(ctx, "debug", "cache.route", "Request routed through shared metadata cache", providerMeta(resolved.Provider, endpoint, upstreamURL))
 		h.serveCached(recorder, r, resolved.Provider, clientUser, endpoint, upstreamURL)
 		return
 	}
-	if isMetadataEndpoint(endpoint) {
-		h.trace(ctx, "debug", "metadata.route", "Request routed through direct metadata compatibility proxy", providerMeta(resolved.Provider, endpoint, upstreamURL))
-		h.serveDirectMetadata(recorder, r, resolved, clientUser, endpoint, upstreamURL)
-		return
-	}
 	if shouldMultiplexLive(r, endpoint, upstreamURL) {
-		h.trace(ctx, "debug", "live.route", "Request routed through live stream multiplexer", providerMeta(resolved.Provider, endpoint, upstreamURL))
+		h.trace(ctx, "debug", "live.route", "Request routed through one-upstream live stream multiplexer", providerMeta(resolved.Provider, endpoint, upstreamURL))
 		h.serveLiveMultiplexed(recorder, r, resolved.Provider, upstreamURL)
 		return
 	}
-	h.trace(ctx, "debug", "direct.route", "Request routed through transparent direct proxy", providerMeta(resolved.Provider, endpoint, upstreamURL))
-	h.serveDirect(recorder, r, resolved.Provider, upstreamURL)
+	if isDirectMediaEndpoint(endpoint) || isXtreamCatchupTarget(upstreamURL) {
+		h.trace(ctx, "debug", "direct.route", "Request routed through direct media compatibility proxy", providerMeta(resolved.Provider, endpoint, upstreamURL))
+		h.serveDirect(recorder, r, resolved.Provider, upstreamURL)
+		return
+	}
+
+	h.trace(ctx, "debug", "transparent.route", "Request routed through content-aware transparent proxy", providerMeta(resolved.Provider, endpoint, upstreamURL))
+	h.serveTransparent(recorder, r, resolved, clientUser, endpoint, upstreamURL)
 }
 
 func isCacheable(endpoint string, q url.Values) bool {
