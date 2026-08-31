@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -11,6 +12,12 @@ import (
 
 	"github.com/abdulmalik813/iptv-proxy/internal/provider"
 )
+
+type artworkRoundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f artworkRoundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) {
+	return f(r)
+}
 
 func TestNewArtworkHTTPClientUsesShortTimeouts(t *testing.T) {
 	client := newArtworkHTTPClient()
@@ -50,6 +57,25 @@ func TestSniffArtworkContentTypeSupportsModernFormats(t *testing.T) {
 	tiff := []byte{'I', 'I', 0x2a, 0x00, 1, 2, 3, 4}
 	if got := sniffArtworkContentType(tiff); got != "image/tiff" {
 		t.Fatalf("TIFF classified as %q", got)
+	}
+}
+
+func TestSafeArtworkClientRedirectAllowsOnlyQuerylessRawIPImages(t *testing.T) {
+	allowed, _ := url.Parse("http://203.0.113.10/picons/logos/CANADA/channel.png")
+	if !safeArtworkClientRedirect(allowed) {
+		t.Fatal("expected raw-IP PNG to be eligible for client redirect")
+	}
+
+	for _, raw := range []string{
+		"http://203.0.113.10/picons/channel.png?token=secret",
+		"http://user:pass@203.0.113.10/picons/channel.png",
+		"http://203.0.113.10/picons/channel.php",
+		"https://cdn.example.test/picons/channel.png",
+	} {
+		target, _ := url.Parse(raw)
+		if safeArtworkClientRedirect(target) {
+			t.Fatalf("unsafe artwork redirect accepted: %s", raw)
+		}
 	}
 }
 
@@ -128,6 +154,58 @@ func TestServeArtworkRejectsHTMLHTTP200(t *testing.T) {
 	h.serveArtwork(w, r, provider.Provider{ID: "p1", Name: "Provider"}, target, "")
 	if w.Code != http.StatusBadGateway {
 		t.Fatalf("status=%d", w.Code)
+	}
+}
+
+func TestServeArtworkFallsBackToClientForUnreachableRawIPImage(t *testing.T) {
+	previous := artworkHTTPClient
+	artworkHTTPClient = &http.Client{
+		Transport: artworkRoundTripFunc(func(*http.Request) (*http.Response, error) {
+			return nil, errors.New("network blocked")
+		}),
+		Timeout: time.Second,
+	}
+	defer func() { artworkHTTPClient = previous }()
+
+	target, _ := url.Parse("http://203.0.113.10/picons/logos/CANADA/channel.png")
+	h := &Handler{}
+	r := httptest.NewRequest(http.MethodGet, "http://proxy/_artwork/token", nil)
+	w := httptest.NewRecorder()
+	h.serveArtwork(w, r, provider.Provider{ID: "p1", Name: "Provider", Host: "http://provider.example.test"}, target, "")
+
+	resp := w.Result()
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusFound {
+		t.Fatalf("status=%d want %d", resp.StatusCode, http.StatusFound)
+	}
+	if got := resp.Header.Get("Location"); got != target.String() {
+		t.Fatalf("Location=%q want %q", got, target.String())
+	}
+	if got := resp.Header.Get("X-IPTV-Artwork-Fallback"); got != "client-direct" {
+		t.Fatalf("fallback header=%q", got)
+	}
+}
+
+func TestServeArtworkDoesNotRedirectSignedRawIPImage(t *testing.T) {
+	previous := artworkHTTPClient
+	artworkHTTPClient = &http.Client{
+		Transport: artworkRoundTripFunc(func(*http.Request) (*http.Response, error) {
+			return nil, errors.New("network blocked")
+		}),
+		Timeout: time.Second,
+	}
+	defer func() { artworkHTTPClient = previous }()
+
+	target, _ := url.Parse("http://203.0.113.10/picons/channel.png?token=secret")
+	h := &Handler{}
+	r := httptest.NewRequest(http.MethodGet, "http://proxy/_artwork/token", nil)
+	w := httptest.NewRecorder()
+	h.serveArtwork(w, r, provider.Provider{ID: "p1", Name: "Provider", Host: "http://provider.example.test"}, target, "")
+	if w.Code != http.StatusBadGateway {
+		t.Fatalf("status=%d want %d", w.Code, http.StatusBadGateway)
+	}
+	if location := w.Header().Get("Location"); location != "" {
+		t.Fatalf("signed artwork leaked through redirect: %q", location)
 	}
 }
 

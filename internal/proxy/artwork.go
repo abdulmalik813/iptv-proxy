@@ -132,10 +132,9 @@ func (h *Handler) artworkPublicURL(p provider.Provider, token string) string {
 }
 
 func artworkFailureKey(token string) string {
-	// v2 intentionally ignores negative-cache entries created before raw-IP
-	// provider-origin fallback existed. Old keys expire naturally after five
-	// minutes and cannot suppress a newly recoverable image after deployment.
-	return "artwork:fail:v2:" + token
+	// v3 intentionally ignores negative-cache entries created before the safe
+	// client-direct raw-IP image fallback existed. Older keys expire naturally.
+	return "artwork:fail:v3:" + token
 }
 
 func (h *Handler) rememberArtworkFailure(ctx context.Context, token, reason string) {
@@ -182,6 +181,22 @@ func artworkProviderFallback(p provider.Provider, target *url.URL) (*url.URL, bo
 		return nil, false
 	}
 	return &fallback, true
+}
+
+func safeArtworkClientRedirect(target *url.URL) bool {
+	if target == nil || !safeArtworkURL(target) || net.ParseIP(target.Hostname()) == nil {
+		return false
+	}
+	if target.User != nil || target.RawQuery != "" || target.Fragment != "" {
+		return false
+	}
+	path := strings.ToLower(target.EscapedPath())
+	for _, suffix := range []string{".png", ".jpg", ".jpeg", ".gif", ".webp", ".avif", ".heic", ".heif", ".svg", ".ico", ".bmp", ".tif", ".tiff"} {
+		if strings.HasSuffix(path, suffix) {
+			return true
+		}
+	}
+	return false
 }
 
 func (h *Handler) serveArtworkToken(w http.ResponseWriter, r *http.Request, resolved routing.Resolved) {
@@ -256,9 +271,11 @@ func (h *Handler) serveArtwork(w http.ResponseWriter, r *http.Request, p provide
 
 	var lastReason string
 	lastStatus := http.StatusBadGateway
+	lastURL := safeURLString(target.String())
 	for attempt, candidate := range candidates {
 		attemptStarted := time.Now()
 		outgoingURL := safeURLString(candidate.String())
+		lastURL = outgoingURL
 		req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, candidate.String(), nil)
 		if err != nil {
 			lastReason = "invalid request"
@@ -407,16 +424,40 @@ func (h *Handler) serveArtwork(w http.ResponseWriter, r *http.Request, p provide
 	if lastReason == "" {
 		lastReason = "artwork unavailable"
 	}
+	if safeArtworkClientRedirect(target) {
+		// Some providers publish picons on raw public IPs that are unreachable from
+		// the VPN egress while remaining reachable from the IPTV device itself. If
+		// both server-side candidates fail, redirect only a queryless static image
+		// URL. Signed/credential-bearing artwork never leaves the proxy this way.
+		h.clearArtworkFailure(r.Context(), token)
+		h.trace(r.Context(), "info", "artwork.client_redirect", "Server-side artwork fetch failed; redirecting client to safe raw-IP image", map[string]any{
+			"providerId":   p.ID,
+			"providerName": p.Name,
+			"targetUrl":    safeURLString(target.String()),
+			"lastUrl":      lastURL,
+			"attempts":     len(candidates),
+			"elapsedMs":    time.Since(started).Milliseconds(),
+			"error":        lastReason,
+		})
+		w.Header().Set("Location", target.String())
+		w.Header().Set("Cache-Control", "public, max-age=300")
+		w.Header().Set("X-IPTV-Artwork-Fallback", "client-direct")
+		w.WriteHeader(http.StatusFound)
+		return
+	}
+
 	h.rememberArtworkFailure(r.Context(), token, lastReason)
 	h.trace(r.Context(), "error", "upstream.error", "Outgoing artwork request failed", map[string]any{
 		"direction":    "outgoing",
 		"method":       http.MethodGet,
 		"clientMethod": r.Method,
-		"url":          safeURLString(target.String()),
-		"outgoingUrl":  safeURLString(target.String()),
+		"url":          lastURL,
+		"outgoingUrl":  lastURL,
+		"originalUrl":  safeURLString(target.String()),
 		"providerId":   p.ID,
 		"providerName": p.Name,
 		"assetType":    "artwork",
+		"attempts":     len(candidates),
 		"elapsedMs":    time.Since(started).Milliseconds(),
 		"error":        lastReason,
 	})
