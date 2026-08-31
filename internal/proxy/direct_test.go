@@ -30,10 +30,10 @@ func testProvider() provider.Provider {
 	}
 }
 
-func TestBuildUpstreamURLTimeshiftPath(t *testing.T) {
+func TestBuildTransparentUpstreamURLTimeshiftPath(t *testing.T) {
 	p := testProvider()
 	r := httptest.NewRequest(http.MethodGet, "http://proxy/timeshift/local/secret/60/2026-08-30:01-00/123.ts", nil)
-	target, endpoint, user, err := buildUpstreamURL(routing.Resolved{Provider: p, RemainingPath: r.URL.Path}, r)
+	target, endpoint, user, err := buildTransparentUpstreamURL(routing.Resolved{Provider: p, RemainingPath: r.URL.Path}, r)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -49,10 +49,10 @@ func TestBuildUpstreamURLTimeshiftPath(t *testing.T) {
 	}
 }
 
-func TestBuildUpstreamURLAcceptsSecondProviderUser(t *testing.T) {
+func TestBuildTransparentUpstreamURLAcceptsSecondProviderUser(t *testing.T) {
 	p := testProvider()
 	r := httptest.NewRequest(http.MethodGet, "http://proxy/player_api.php?username=family&password=family-pass&action=get_vod_streams", nil)
-	target, endpoint, user, err := buildUpstreamURL(routing.Resolved{Provider: p, RemainingPath: r.URL.Path}, r)
+	target, endpoint, user, err := buildTransparentUpstreamURL(routing.Resolved{Provider: p, RemainingPath: r.URL.Path}, r)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -64,28 +64,28 @@ func TestBuildUpstreamURLAcceptsSecondProviderUser(t *testing.T) {
 	}
 }
 
-func TestBuildUpstreamURLRejectsWrongProviderUserPassword(t *testing.T) {
+func TestBuildTransparentUpstreamURLRejectsWrongProviderUserPassword(t *testing.T) {
 	p := testProvider()
 	r := httptest.NewRequest(http.MethodGet, "http://proxy/player_api.php?username=family&password=wrong", nil)
-	_, _, _, err := buildUpstreamURL(routing.Resolved{Provider: p, RemainingPath: r.URL.Path}, r)
+	_, _, _, err := buildTransparentUpstreamURL(routing.Resolved{Provider: p, RemainingPath: r.URL.Path}, r)
 	if err == nil {
 		t.Fatal("expected invalid provider user password to be rejected")
 	}
 }
 
-func TestBuildUpstreamURLRejectsDisabledProviderUser(t *testing.T) {
+func TestBuildTransparentUpstreamURLRejectsDisabledProviderUser(t *testing.T) {
 	p := testProvider()
 	r := httptest.NewRequest(http.MethodGet, "http://proxy/player_api.php?username=disabled&password=nope", nil)
-	_, _, _, err := buildUpstreamURL(routing.Resolved{Provider: p, RemainingPath: r.URL.Path}, r)
+	_, _, _, err := buildTransparentUpstreamURL(routing.Resolved{Provider: p, RemainingPath: r.URL.Path}, r)
 	if err == nil {
 		t.Fatal("expected disabled provider user to be rejected")
 	}
 }
 
-func TestBuildUpstreamURLStreamingTimeshiftQuery(t *testing.T) {
+func TestBuildTransparentUpstreamURLStreamingTimeshiftQuery(t *testing.T) {
 	p := testProvider()
 	r := httptest.NewRequest(http.MethodGet, "http://proxy/streaming/timeshift.php?username=local&password=secret&stream=123&start=2026-08-30:01-00&duration=60", nil)
-	target, _, _, err := buildUpstreamURL(routing.Resolved{Provider: p, RemainingPath: r.URL.Path}, r)
+	target, _, _, err := buildTransparentUpstreamURL(routing.Resolved{Provider: p, RemainingPath: r.URL.Path}, r)
 	if err != nil {
 		t.Fatal(err)
 	}
