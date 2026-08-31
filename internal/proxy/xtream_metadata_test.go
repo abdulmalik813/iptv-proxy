@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
@@ -86,6 +87,43 @@ func TestRewriteXtreamBootstrapPreservesProviderRoute(t *testing.T) {
 	}
 	if payload.ServerInfo["url"] != "https://iptv.example.test/backup" {
 		t.Fatalf("routed provider URL=%v", payload.ServerInfo["url"])
+	}
+}
+
+func TestDirectPlayerAPIAccountAliasNeverLeaksUpstreamCredentials(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = io.WriteString(w, `{"user_info":{"username":"UPSTREAM","password":"UPSTREAM-PASS","auth":1,"status":"Active"},"server_info":{"url":"http://provider.invalid","timezone":"UTC"}}`)
+	}))
+	defer upstream.Close()
+
+	target, _ := url.Parse(upstream.URL + "/player_api.php?username=UPSTREAM&password=UPSTREAM-PASS&action=get_account_info")
+	h := &Handler{
+		appURL:         "https://iptv.example.test",
+		metadataClient: upstream.Client(),
+	}
+	resolved := routing.Resolved{
+		Provider:  provider.Provider{ID: "provider-1", Name: "Provider"},
+		MatchedBy: routing.MatchDefault,
+	}
+	clientUser := provider.User{Username: "local-user", ClientPassword: "local-pass"}
+	r := httptest.NewRequest(http.MethodGet, "https://iptv.example.test/player_api.php?username=local-user&password=local-pass&action=get_account_info", nil)
+	w := httptest.NewRecorder()
+
+	h.serveDirectMetadata(w, r, resolved, clientUser, "player_api.php", target)
+	resp := w.Result()
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK || !strings.HasPrefix(resp.Header.Get("Content-Type"), "application/json") {
+		t.Fatalf("status=%d type=%q body=%s", resp.StatusCode, resp.Header.Get("Content-Type"), body)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatal(err)
+	}
+	userInfo := payload["user_info"].(map[string]any)
+	if userInfo["username"] != "local-user" || userInfo["password"] != "local-pass" {
+		t.Fatalf("account alias leaked provider credentials: %#v", userInfo)
 	}
 }
 
