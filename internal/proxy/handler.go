@@ -27,8 +27,13 @@ var cacheablePlayerActions = map[string]bool{
 	"get_series":       true,
 }
 
+// These are the username/password-authenticated, client-facing Xtream routes.
+// Admin/system APIs and MAG/Stalker portal routes are deliberately not exposed:
+// they use different trust models and are not part of an Xtream player account.
 var supportedEndpoints = map[string]bool{
 	"player_api.php": true,
+	"panel_api.php":  true,
+	"enigma2.php":    true,
 	"get.php":        true,
 	"xmltv.php":      true,
 	"live":           true,
@@ -36,6 +41,7 @@ var supportedEndpoints = map[string]bool{
 	"series":         true,
 	"timeshift":      true,
 	"streaming":      true,
+	"hls":            true,
 }
 
 type Handler struct {
@@ -144,8 +150,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Xtream clients are inconsistent about GET versus POST. Smarters and a
-	// number of compatible apps send the login/player API as a form body. Merge
-	// that form into the request query before authentication/routing so the rest
+	// number of compatible apps send metadata/login API calls as form bodies.
+	// Merge those values into the query before authentication/routing so the rest
 	// of the proxy has one canonical representation.
 	remainingEndpoint := strings.Split(strings.TrimPrefix(resolved.RemainingPath, "/"), "/")[0]
 	if isMetadataEndpoint(remainingEndpoint) && r.Method == http.MethodPost {
@@ -216,59 +222,98 @@ func buildUpstreamURL(resolved routing.Resolved, r *http.Request) (*url.URL, str
 	if len(parts) > 0 {
 		endpoint = parts[0]
 	}
-	if !supportedEndpoints[endpoint] {
-		return nil, endpoint, provider.User{}, errors.New("unsupported IPTV endpoint")
-	}
 
 	q := r.URL.Query()
 	clientUser := provider.User{}
 	authenticate := func(username, password string) error {
-		user, ok := p.Authenticate(username, password)
-		if !ok {
-			return errors.New("invalid IPTV credentials")
+		if user, ok := p.Authenticate(username, password); ok {
+			clientUser = user
+			return nil
 		}
-		clientUser = user
-		return nil
+		// A few Xtream clients send literal '+' characters in form/query values
+		// without percent-encoding them. net/url decodes those as spaces. Exact
+		// credentials always win; this fallback is attempted only after exact auth
+		// fails, so legitimate passwords containing spaces continue to work.
+		plusUsername := strings.ReplaceAll(username, " ", "+")
+		plusPassword := strings.ReplaceAll(password, " ", "+")
+		if (plusUsername != username || plusPassword != password) && plusUsername != "" && plusPassword != "" {
+			if user, ok := p.Authenticate(plusUsername, plusPassword); ok {
+				clientUser = user
+				return nil
+			}
+		}
+		return errors.New("invalid IPTV credentials")
 	}
 
-	switch endpoint {
-	case "player_api.php", "get.php", "xmltv.php":
-		if err := authenticate(q.Get("username"), q.Get("password")); err != nil {
-			return nil, endpoint, provider.User{}, err
+	// Xtream's newer nginx rewrite also accepts /{user}/{pass}/{stream_id} as a
+	// live-stream alias. Handle it before rejecting an unknown first segment and
+	// normalize it to the canonical provider /live/... route upstream.
+	legacyBareLive := false
+	if !supportedEndpoints[endpoint] {
+		if len(parts) < 3 {
+			return nil, endpoint, provider.User{}, errors.New("unsupported IPTV endpoint")
 		}
-		q.Set("username", p.UpstreamUsername)
-		q.Set("password", p.UpstreamPassword)
-	case "live", "movie", "series":
-		segments := strings.Split(strings.TrimPrefix(remaining, "/"), "/")
-		if len(segments) < 4 {
-			return nil, endpoint, provider.User{}, errors.New("invalid IPTV stream path")
+		if err := authenticate(parts[0], parts[1]); err != nil {
+			return nil, "live", provider.User{}, err
 		}
-		if err := authenticate(segments[1], segments[2]); err != nil {
-			return nil, endpoint, provider.User{}, err
-		}
-		segments[1] = p.UpstreamUsername
-		segments[2] = p.UpstreamPassword
+		segments := []string{"live", p.UpstreamUsername, p.UpstreamPassword}
+		segments = append(segments, parts[2:]...)
 		remaining = "/" + strings.Join(segments, "/")
-	case "timeshift":
-		segments := strings.Split(strings.TrimPrefix(remaining, "/"), "/")
-		if len(segments) < 6 {
-			return nil, endpoint, provider.User{}, errors.New("invalid IPTV timeshift path")
+		endpoint = "live"
+		legacyBareLive = true
+	}
+
+	if !legacyBareLive {
+		switch endpoint {
+		case "player_api.php", "panel_api.php", "enigma2.php", "get.php", "xmltv.php":
+			if err := authenticate(q.Get("username"), q.Get("password")); err != nil {
+				return nil, endpoint, provider.User{}, err
+			}
+			q.Set("username", p.UpstreamUsername)
+			q.Set("password", p.UpstreamPassword)
+		case "live", "movie", "series":
+			segments := strings.Split(strings.TrimPrefix(remaining, "/"), "/")
+			if len(segments) < 4 {
+				return nil, endpoint, provider.User{}, errors.New("invalid IPTV stream path")
+			}
+			if err := authenticate(segments[1], segments[2]); err != nil {
+				return nil, endpoint, provider.User{}, err
+			}
+			segments[1] = p.UpstreamUsername
+			segments[2] = p.UpstreamPassword
+			remaining = "/" + strings.Join(segments, "/")
+		case "hls":
+			segments := strings.Split(strings.TrimPrefix(remaining, "/"), "/")
+			if len(segments) < 5 {
+				return nil, endpoint, provider.User{}, errors.New("invalid IPTV HLS segment path")
+			}
+			if err := authenticate(segments[1], segments[2]); err != nil {
+				return nil, endpoint, provider.User{}, err
+			}
+			segments[1] = p.UpstreamUsername
+			segments[2] = p.UpstreamPassword
+			remaining = "/" + strings.Join(segments, "/")
+		case "timeshift":
+			segments := strings.Split(strings.TrimPrefix(remaining, "/"), "/")
+			if len(segments) < 6 {
+				return nil, endpoint, provider.User{}, errors.New("invalid IPTV timeshift path")
+			}
+			if err := authenticate(segments[1], segments[2]); err != nil {
+				return nil, endpoint, provider.User{}, err
+			}
+			segments[1] = p.UpstreamUsername
+			segments[2] = p.UpstreamPassword
+			remaining = "/" + strings.Join(segments, "/")
+		case "streaming":
+			if len(parts) < 2 || !strings.EqualFold(parts[1], "timeshift.php") {
+				return nil, endpoint, provider.User{}, errors.New("unsupported streaming endpoint")
+			}
+			if err := authenticate(q.Get("username"), q.Get("password")); err != nil {
+				return nil, endpoint, provider.User{}, err
+			}
+			q.Set("username", p.UpstreamUsername)
+			q.Set("password", p.UpstreamPassword)
 		}
-		if err := authenticate(segments[1], segments[2]); err != nil {
-			return nil, endpoint, provider.User{}, err
-		}
-		segments[1] = p.UpstreamUsername
-		segments[2] = p.UpstreamPassword
-		remaining = "/" + strings.Join(segments, "/")
-	case "streaming":
-		if len(parts) < 2 || !strings.EqualFold(parts[1], "timeshift.php") {
-			return nil, endpoint, provider.User{}, errors.New("unsupported streaming endpoint")
-		}
-		if err := authenticate(q.Get("username"), q.Get("password")); err != nil {
-			return nil, endpoint, provider.User{}, err
-		}
-		q.Set("username", p.UpstreamUsername)
-		q.Set("password", p.UpstreamPassword)
 	}
 
 	base.Path = strings.TrimSuffix(base.Path, "/") + remaining
@@ -303,7 +348,21 @@ func hasOnlyQueryKeys(q url.Values, allowed ...string) bool {
 }
 
 func shouldMultiplexLive(r *http.Request, endpoint string, target *url.URL) bool {
-	return r.Method == http.MethodGet && endpoint == "live" && !strings.EqualFold(path.Ext(target.Path), ".m3u8")
+	if r.Method != http.MethodGet || endpoint != "live" || strings.EqualFold(path.Ext(target.Path), ".m3u8") {
+		return false
+	}
+	// Range requests are probes/seeks and must preserve normal HTTP range
+	// semantics rather than joining the continuous live multiplexer.
+	if r.Header.Get("Range") != "" {
+		return false
+	}
+	// Native Xtream HLS playlists commonly reference finite /live/.../*.ts
+	// segments carrying a token query. Those are individual files, not a
+	// continuous live transport stream, and must be proxied directly.
+	if target.Query().Get("token") != "" {
+		return false
+	}
+	return true
 }
 
 func liveStreamKey(providerID string, target *url.URL) string {
