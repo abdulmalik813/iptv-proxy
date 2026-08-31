@@ -50,9 +50,18 @@ func (h *Handler) serveCached(w http.ResponseWriter, r *http.Request, p provider
 		w.Header().Set("Content-Type", response.ContentType)
 	}
 
+	// The cached generation is provider-scoped and shared by all local users.
+	// Personalize provider URLs only when sending it to this client; signed/CDN
+	// media is wrapped behind deterministic opaque tokens without changing the
+	// exact upstream URL stored in Redis.
 	body := response.Body
-	if endpoint == "get.php" {
+	switch endpoint {
+	case "player_api.php", "panel_api.php":
+		body = rewriteXtreamJSONURLs(p, clientUser, h.xtreamProviderPublicBase(p), body)
+		body = h.rewriteOpaqueMediaJSON(r.Context(), p, body)
+	case "get.php":
 		body = h.rewriteM3UPlaylist(p, clientUser, body)
+		body = h.rewriteOpaqueMediaM3U(r.Context(), p, body)
 	}
 	// Cached bodies can be rewritten per client, so always advertise the final
 	// local representation's exact size. HEAD must return those same headers but
@@ -156,8 +165,8 @@ func (h *Handler) fetchCacheable(ctx context.Context, p provider.Provider, endpo
 		return cachepkg.Response{}, err
 	}
 	// Rewrite provider/CDN artwork only after validation so cache integrity checks
-	// always inspect the provider's original bytes. Stream URLs in get.php remain
-	// raw here and are personalized for each local user when served.
+	// always inspect the provider's original bytes. Stream/media URLs remain raw
+	// here and are personalized/wrapped for each local client when served.
 	body = h.rewriteCachedArtwork(ctx, p, endpoint, body)
 	return cachepkg.Response{
 		Status:         resp.StatusCode,
