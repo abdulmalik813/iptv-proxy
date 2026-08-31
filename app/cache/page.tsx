@@ -42,10 +42,38 @@ interface CacheStats {
   retiredGenerations: number;
 }
 
+interface CacheOperationState {
+  key: string;
+  status: 'running' | 'succeeded' | 'failed' | 'rejected' | string;
+  operation?: string;
+  operationId?: string;
+  startedAt?: number;
+  updatedAt?: number;
+  finishedAt?: number;
+  error?: string;
+}
+
+interface BulkCacheState {
+  status: 'idle' | 'refreshing' | 'succeeded' | 'partial' | 'failed' | 'interrupted' | 'unknown' | string;
+  operationId?: string;
+  startedAt?: number;
+  updatedAt?: number;
+  finishedAt?: number;
+  started?: number;
+  succeeded?: number;
+  failed?: number;
+  skipped?: number;
+  errors?: string[];
+}
+
 type CacheEnvelope = {
   success?: boolean;
-  data?: CacheEntry[] | Record<string, unknown>;
+  started?: boolean;
+  alreadyRunning?: boolean;
+  data?: CacheEntry[] | BulkCacheState | Record<string, unknown>;
   stats?: CacheStats;
+  states?: CacheOperationState[];
+  bulk?: BulkCacheState;
   error?: string;
 };
 
@@ -56,6 +84,8 @@ const emptyStats: CacheStats = {
   activeReaders: 0,
   retiredGenerations: 0,
 };
+
+const idleBulk: BulkCacheState = { status: 'idle' };
 
 function formatBytes(value: number) {
   if (!Number.isFinite(value) || value <= 0) return '0 B';
@@ -69,7 +99,7 @@ function formatBytes(value: number) {
   return `${current.toFixed(current >= 10 || unit === 0 ? 0 : 1)} ${units[unit]}`;
 }
 
-function formatTime(epoch: number) {
+function formatTime(epoch?: number) {
   return epoch ? new Date(epoch * 1000).toLocaleString() : 'N/A';
 }
 
@@ -83,9 +113,27 @@ function describeEntry(entry: CacheEntry) {
   };
 }
 
+function stateBadge(state?: CacheOperationState) {
+  if (!state) return <Badge variant="outline">Idle</Badge>;
+  switch (state.status) {
+    case 'running':
+      return <Badge variant="warning">Refreshing</Badge>;
+    case 'succeeded':
+      return <Badge variant="success">Updated</Badge>;
+    case 'failed':
+      return <Badge variant="destructive">Failed</Badge>;
+    case 'rejected':
+      return <Badge variant="warning">Rejected</Badge>;
+    default:
+      return <Badge variant="outline">{state.status}</Badge>;
+  }
+}
+
 export default function CachePage() {
   const [entries, setEntries] = React.useState<CacheEntry[]>([]);
   const [stats, setStats] = React.useState<CacheStats>(emptyStats);
+  const [states, setStates] = React.useState<CacheOperationState[]>([]);
+  const [bulk, setBulk] = React.useState<BulkCacheState>(idleBulk);
   const [loading, setLoading] = React.useState(true);
   const [refreshingAll, setRefreshingAll] = React.useState(false);
   const [busyKey, setBusyKey] = React.useState<string | null>(null);
@@ -102,6 +150,8 @@ export default function CachePage() {
       }
       setEntries(Array.isArray(cachePayload.data) ? cachePayload.data : []);
       setStats(cachePayload.stats || emptyStats);
+      setStates(Array.isArray(cachePayload.states) ? cachePayload.states : []);
+      setBulk(cachePayload.bulk || idleBulk);
     } catch (err) {
       if (!silent) setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -111,9 +161,12 @@ export default function CachePage() {
 
   React.useEffect(() => {
     void load();
-    const timer = window.setInterval(() => void load(true), 5_000);
+    const timer = window.setInterval(() => void load(true), 3_000);
     return () => window.clearInterval(timer);
   }, [load]);
+
+  const operationByKey = React.useMemo(() => new Map(states.map((state) => [state.key, state])), [states]);
+  const bulkRunning = bulk.status === 'refreshing';
 
   const sorted = React.useMemo(
     () => [...entries].sort((left, right) => describeEntry(left).title.localeCompare(describeEntry(right).title)),
@@ -127,16 +180,11 @@ export default function CachePage() {
     try {
       const response = await fetch(apiPath('/api/system/cache'), { method: 'POST' });
       const payload = await readJson<CacheEnvelope>(response);
-      const data = (payload.data || {}) as Record<string, unknown>;
-      const succeeded = Number(data.succeeded || 0);
-      const failed = Number(data.failed || 0);
-      if (!response.ok || (!payload.success && succeeded === 0)) {
-        const errors = Array.isArray(data.errors) ? data.errors.join('\n') : '';
-        throw new Error(payload.error || errors || `Cache refresh failed (HTTP ${response.status}).`);
+      if (!response.ok || !payload.success) {
+        throw new Error(payload.error || `Cache refresh failed to start (HTTP ${response.status}).`);
       }
-      setMessage(`Cache refresh completed: ${succeeded} succeeded${failed ? `, ${failed} failed` : ''}. Missing heavy-cache entries were created automatically.`);
-      if (Array.isArray(data.errors) && data.errors.length) setError(data.errors.join('\n'));
-      await load();
+      setMessage(payload.alreadyRunning ? 'A bulk cache refresh is already running. The existing job is shown below.' : 'Bulk cache refresh started. It will continue even if you reload or leave this page.');
+      await load(true);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -152,10 +200,10 @@ export default function CachePage() {
       const response = await fetch(apiPath(`/api/system/cache?key=${encodeURIComponent(key)}`), { method: 'DELETE' });
       const payload = await readJson<CacheEnvelope>(response);
       if (!response.ok || !payload.success) {
-        throw new Error(payload.error || `Cache refresh failed (HTTP ${response.status}).`);
+        throw new Error(payload.error || `Cache refresh failed to start (HTTP ${response.status}).`);
       }
-      setMessage('Fresh provider data was validated and published for this cache entry. Any request still using the previous generation may finish before that old generation is removed.');
-      await load();
+      setMessage('Cache refresh started. Automatic and manual refreshes share the same Redis lock, so duplicate pulls for this entry are skipped.');
+      await load(true);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -163,20 +211,23 @@ export default function CachePage() {
     }
   };
 
+  const bulkCompleted = (bulk.succeeded || 0) + (bulk.failed || 0) + (bulk.skipped || 0);
+  const bulkStarted = bulk.started || 0;
+
   return (
     <AppShell>
       <PageHeader
         title="Cache"
-        description="Validated IPTV metadata cached in Redis with automatic background replacement. Cache activity is available in the unified Logs console."
+        description="Validated IPTV metadata cached in Redis with persistent single-flight refresh state. Cache activity is also available in the unified Logs console."
         actions={
           <>
             <Button variant="outline" onClick={() => void load()} disabled={loading}>
               <RefreshCw className={loading ? 'animate-spin' : ''} />
               Reload status
             </Button>
-            <Button onClick={() => void refreshAll()} disabled={refreshingAll}>
-              <RotateCcw className={refreshingAll ? 'animate-spin' : ''} />
-              {refreshingAll ? 'Refreshing…' : 'Refresh all cache'}
+            <Button onClick={() => void refreshAll()} disabled={refreshingAll || bulkRunning}>
+              <RotateCcw className={refreshingAll || bulkRunning ? 'animate-spin' : ''} />
+              {bulkRunning ? 'Refreshing…' : refreshingAll ? 'Starting…' : 'Refresh all cache'}
             </Button>
           </>
         }
@@ -184,6 +235,24 @@ export default function CachePage() {
 
       {error && <Alert variant="destructive"><AlertDescription className="whitespace-pre-wrap">{error}</AlertDescription></Alert>}
       {message && <Alert variant="success"><AlertDescription>{message}</AlertDescription></Alert>}
+
+      {bulkRunning && (
+        <Alert>
+          <AlertDescription>
+            Bulk refresh is running{bulk.operationId ? ` · ${bulk.operationId.slice(0, 8)}` : ''}. {bulkCompleted} completed of {bulkStarted} started so far
+            {(bulk.skipped || 0) > 0 ? ` · ${bulk.skipped} duplicate${bulk.skipped === 1 ? '' : 's'} skipped` : ''}. This state is stored in Redis and survives a page reload.
+          </AlertDescription>
+        </Alert>
+      )}
+
+      {!bulkRunning && bulk.status !== 'idle' && bulk.status !== 'unknown' && (
+        <Alert variant={bulk.status === 'failed' || bulk.status === 'interrupted' ? 'destructive' : bulk.status === 'partial' ? 'warning' : 'success'}>
+          <AlertDescription>
+            Last bulk refresh: {bulk.status} · {bulk.succeeded || 0} succeeded, {bulk.failed || 0} failed, {bulk.skipped || 0} skipped · finished {formatTime(bulk.finishedAt)}.
+            {bulk.errors?.length ? ` ${bulk.errors[0]}` : ''}
+          </AlertDescription>
+        </Alert>
+      )}
 
       <div className="grid gap-4 sm:grid-cols-3 xl:grid-cols-5">
         <MetricCard label="Entries" value={stats.entries} icon={<Database className="size-5" />} />
@@ -196,7 +265,7 @@ export default function CachePage() {
       {stats.retiredGenerations > 0 && (
         <Alert>
           <AlertDescription>
-            {stats.retiredGenerations} previous cache generation{stats.retiredGenerations === 1 ? ' is' : 's are'} waiting for active request{stats.activeReaders === 1 ? '' : 's'} to finish. Cleanup happens automatically when the last reader releases it.
+            {stats.retiredGenerations} previous generation{stats.retiredGenerations === 1 ? ' is' : 's are'} waiting for active request{stats.activeReaders === 1 ? '' : 's'} to finish. Cleanup happens automatically when the last reader releases it.
           </AlertDescription>
         </Alert>
       )}
@@ -208,7 +277,7 @@ export default function CachePage() {
           icon={<Database className="size-6" />}
           title="Cache is empty"
           description="Refresh all cache to pull the standard heavy provider datasets into Redis."
-          action={<Button size="sm" onClick={() => void refreshAll()} disabled={refreshingAll}><RotateCcw className={refreshingAll ? 'animate-spin' : ''} />{refreshingAll ? 'Refreshing…' : 'Refresh all cache'}</Button>}
+          action={<Button size="sm" onClick={() => void refreshAll()} disabled={refreshingAll || bulkRunning}><RotateCcw className={refreshingAll || bulkRunning ? 'animate-spin' : ''} />{bulkRunning ? 'Refreshing…' : 'Refresh all cache'}</Button>}
         />
       ) : (
         <Card>
@@ -220,6 +289,7 @@ export default function CachePage() {
                   <TableHead>Items</TableHead>
                   <TableHead>Size</TableHead>
                   <TableHead>Readers</TableHead>
+                  <TableHead>State</TableHead>
                   <TableHead>Fetched</TableHead>
                   <TableHead>Refresh</TableHead>
                   <TableHead className="text-right">Action</TableHead>
@@ -229,6 +299,8 @@ export default function CachePage() {
                 {sorted.map((entry) => {
                   const descriptor = describeEntry(entry);
                   const refreshAt = entry.fetchedAt + Math.round(entry.ttlSeconds * 0.7);
+                  const state = operationByKey.get(entry.key);
+                  const running = state?.status === 'running';
                   return (
                     <TableRow key={entry.key}>
                       <TableCell>
@@ -238,6 +310,10 @@ export default function CachePage() {
                       <TableCell>{entry.itemCountKnown ? entry.itemCount ?? 0 : '—'}</TableCell>
                       <TableCell>{formatBytes(entry.sizeBytes)}</TableCell>
                       <TableCell>{entry.activeReaders ?? 0}</TableCell>
+                      <TableCell>
+                        {stateBadge(state)}
+                        {state && <div className="mt-1 max-w-48 truncate text-xs text-muted-foreground" title={state.error || undefined}>{state.operation || 'refresh'} · {formatTime(state.finishedAt || state.startedAt)}</div>}
+                      </TableCell>
                       <TableCell className="text-muted-foreground">{formatTime(entry.fetchedAt)}</TableCell>
                       <TableCell>
                         <div className="text-sm">{formatTime(refreshAt)}</div>
@@ -246,9 +322,9 @@ export default function CachePage() {
                         </Badge>
                       </TableCell>
                       <TableCell className="text-right">
-                        <Button variant="outline" size="sm" onClick={() => void refreshEntry(entry.key)} disabled={busyKey === entry.key || refreshingAll}>
-                          <RotateCcw className={busyKey === entry.key ? 'animate-spin' : ''} />
-                          Refresh
+                        <Button variant="outline" size="sm" onClick={() => void refreshEntry(entry.key)} disabled={busyKey === entry.key || refreshingAll || bulkRunning || running}>
+                          <RotateCcw className={busyKey === entry.key || running ? 'animate-spin' : ''} />
+                          {running ? 'Refreshing' : 'Refresh'}
                         </Button>
                       </TableCell>
                     </TableRow>

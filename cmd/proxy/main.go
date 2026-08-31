@@ -67,6 +67,9 @@ func main() {
 	cacheManager := cachepkg.NewManager(redisClient)
 	traceLogger := proxylog.New(uiURL, internalToken)
 	cacheManager.SetEventSink(func(event cachepkg.Event) {
+		if err := persistCacheEvent(redisClient, event); err != nil {
+			log.Printf("unable to persist cache operation state for %s: %v", event.Key, err)
+		}
 		metadata := map[string]any{
 			"operation":   event.Operation,
 			"operationId": event.OperationID,
@@ -162,25 +165,54 @@ func main() {
 				writeJSON(w, http.StatusInternalServerError, map[string]any{"success": false, "error": err.Error()})
 				return
 			}
-			writeJSON(w, http.StatusOK, map[string]any{"success": true, "data": entries, "stats": stats})
+			states, err := loadCacheOperationStates(ctx, redisClient, entries)
+			if err != nil {
+				log.Printf("unable to load persisted cache operation states: %v", err)
+				states = []cacheOperationState{}
+			}
+			bulk, err := iptvHandler.CacheBulkStatus(ctx)
+			if err != nil {
+				log.Printf("unable to load bulk cache state: %v", err)
+				bulk = proxycore.BulkCacheState{Status: "unknown"}
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"success": true, "data": entries, "stats": stats, "states": states, "bulk": bulk})
 		case http.MethodDelete:
-			ctx, cancel := context.WithTimeout(r.Context(), 10*time.Minute)
-			defer cancel()
-			key := r.URL.Query().Get("key")
+			key := strings.TrimSpace(r.URL.Query().Get("key"))
 			if key == "" {
-				count, err := cacheManager.PurgeAll(ctx)
-				if err != nil {
-					writeJSON(w, http.StatusInternalServerError, map[string]any{"success": false, "error": err.Error(), "replaced": count})
-					return
+				writeJSON(w, http.StatusBadRequest, map[string]any{"success": false, "error": "cache key is required"})
+				return
+			}
+
+			validationCtx, validationCancel := context.WithTimeout(r.Context(), 5*time.Second)
+			entries, err := cacheManager.Entries(validationCtx)
+			validationCancel()
+			if err != nil {
+				writeJSON(w, http.StatusServiceUnavailable, map[string]any{"success": false, "error": err.Error()})
+				return
+			}
+			valid := false
+			for _, entry := range entries {
+				if entry.Key == key && entry.RefreshRegistered {
+					valid = true
+					break
 				}
-				writeJSON(w, http.StatusOK, map[string]any{"success": true, "replaced": count})
+			}
+			if !valid {
+				writeJSON(w, http.StatusNotFound, map[string]any{"success": false, "error": "cache entry is not registered for refresh"})
 				return
 			}
-			if err := cacheManager.Purge(ctx, key); err != nil {
-				writeJSON(w, http.StatusBadRequest, map[string]any{"success": false, "error": err.Error()})
-				return
-			}
-			writeJSON(w, http.StatusOK, map[string]any{"success": true, "replaced": 1})
+
+			// Detach the cache replacement from the HTTP request. The Redis entry
+			// lock still provides single-flight behavior if an automatic refresh or
+			// another manual request already owns this cache key.
+			go func(cacheKey string) {
+				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+				defer cancel()
+				if err := cacheManager.Purge(ctx, cacheKey); err != nil && err != cachepkg.ErrReplacementInProgress {
+					log.Printf("background cache refresh failed for %s: %v", cacheKey, err)
+				}
+			}(key)
+			writeJSON(w, http.StatusAccepted, map[string]any{"success": true, "started": true, "key": key})
 		default:
 			methodNotAllowed(w, http.MethodGet+", "+http.MethodDelete)
 		}
@@ -194,14 +226,12 @@ func main() {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
-		ctx, cancel := context.WithTimeout(r.Context(), 30*time.Minute)
-		defer cancel()
-		result := iptvHandler.WarmAllCache(ctx)
-		status := http.StatusOK
-		if result.Failed > 0 && result.Succeeded == 0 {
-			status = http.StatusBadGateway
+		state, started, err := iptvHandler.StartWarmAllCache()
+		if err != nil {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]any{"success": false, "error": err.Error()})
+			return
 		}
-		writeJSON(w, status, map[string]any{"success": result.Failed == 0, "data": result})
+		writeJSON(w, http.StatusAccepted, map[string]any{"success": true, "started": started, "alreadyRunning": !started, "data": state})
 	})
 
 	if uiBasePath == "/" {
