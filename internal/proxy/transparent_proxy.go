@@ -15,6 +15,8 @@ import (
 	"github.com/abdulmalik813/iptv-proxy/internal/routing"
 )
 
+const transparentSniffBytes = 4096
+
 func looksLikeJSONResponse(resp *http.Response, target *url.URL) bool {
 	contentType := strings.ToLower(resp.Header.Get("Content-Type"))
 	if strings.Contains(contentType, "json") {
@@ -61,9 +63,47 @@ func looksLikeHLSBody(body []byte) bool {
 	return bytes.Contains(upper, []byte("#EXT-X-"))
 }
 
+func looksLikeXMLBody(body []byte) bool {
+	trimmed := bytes.TrimSpace(body)
+	if len(trimmed) < 3 || trimmed[0] != '<' {
+		return false
+	}
+	lower := bytes.ToLower(trimmed[:min(len(trimmed), 64)])
+	if bytes.HasPrefix(lower, []byte("<html")) || bytes.HasPrefix(lower, []byte("<!doctype html")) {
+		return false
+	}
+	return bytes.HasPrefix(lower, []byte("<?xml")) ||
+		bytes.HasPrefix(lower, []byte("<tv")) ||
+		bytes.HasPrefix(lower, []byte("<items")) ||
+		bytes.HasPrefix(lower, []byte("<playlist")) ||
+		bytes.HasPrefix(lower, []byte("<channels")) ||
+		bytes.HasPrefix(lower, []byte("<channel")) ||
+		bytes.HasPrefix(lower, []byte("<root"))
+}
+
+func looksLikeStructuredBodyPrefix(body []byte) bool {
+	trimmed := bytes.TrimSpace(body)
+	if len(trimmed) == 0 {
+		return false
+	}
+	if trimmed[0] == '{' || trimmed[0] == '[' || bytes.HasPrefix(trimmed, []byte("#EXTM3U")) {
+		return true
+	}
+	return looksLikeXMLBody(trimmed)
+}
+
+func shouldSniffTransparentResponse(resp *http.Response) bool {
+	if resp == nil {
+		return false
+	}
+	contentType := strings.ToLower(strings.TrimSpace(resp.Header.Get("Content-Type")))
+	return contentType == "" || strings.HasPrefix(contentType, "text/")
+}
+
 func (h *Handler) rewriteTransparentBody(ctxRequest *http.Request, resolved routing.Resolved, clientUser provider.User, endpoint string, target *url.URL, resp *http.Response, body []byte) ([]byte, string) {
 	publicBase := h.xtreamPublicBase(resolved)
-	if looksLikeJSONResponse(resp, target) || json.Valid(bytes.TrimSpace(body)) {
+	trimmed := bytes.TrimSpace(body)
+	if looksLikeJSONResponse(resp, target) || json.Valid(trimmed) {
 		body = h.rewriteXtreamBootstrap(resolved, clientUser, body)
 		body = rewriteXtreamJSONURLs(resolved.Provider, clientUser, publicBase, body)
 		body = h.rewriteOpaqueMediaJSON(ctxRequest.Context(), resolved.Provider, body)
@@ -71,13 +111,13 @@ func (h *Handler) rewriteTransparentBody(ctxRequest *http.Request, resolved rout
 		return body, "application/json"
 	}
 
-	if looksLikeXMLResponse(resp, target, endpoint) {
+	if looksLikeXMLResponse(resp, target, endpoint) || looksLikeXMLBody(trimmed) {
 		body = rewriteXtreamXMLURLs(resolved.Provider, clientUser, publicBase, body)
 		body = h.rewriteXMLTVArtwork(ctxRequest.Context(), resolved.Provider, body)
 		return body, "application/xml"
 	}
 
-	if looksLikeM3UResponse(resp, target, endpoint) && bytes.HasPrefix(bytes.TrimSpace(body), []byte("#EXTM3U")) {
+	if bytes.HasPrefix(trimmed, []byte("#EXTM3U")) {
 		if endpoint != "get.php" && looksLikeHLSBody(body) {
 			base := target
 			if resp.Request != nil && resp.Request.URL != nil {
@@ -97,6 +137,36 @@ func (h *Handler) rewriteTransparentBody(ctxRequest *http.Request, resolved rout
 	return body, resp.Header.Get("Content-Type")
 }
 
+func writeTransparentPassthrough(w http.ResponseWriter, resp *http.Response, prefix []byte) {
+	w.WriteHeader(resp.StatusCode)
+	controller := http.NewResponseController(w)
+	if len(prefix) > 0 {
+		if _, err := w.Write(prefix); err != nil {
+			return
+		}
+		_ = controller.Flush()
+	}
+	buf := make([]byte, 128*1024)
+	for {
+		n, readErr := resp.Body.Read(buf)
+		if n > 0 {
+			if _, writeErr := w.Write(buf[:n]); writeErr != nil {
+				return
+			}
+			_ = controller.Flush()
+		}
+		if readErr != nil {
+			return
+		}
+	}
+}
+
+func transparentGatewayError(w http.ResponseWriter, message string) {
+	w.Header().Del("Content-Length")
+	w.Header().Del("Content-Encoding")
+	http.Error(w, message, http.StatusBadGateway)
+}
+
 // serveTransparent forwards an authenticated request without requiring a
 // predeclared Xtream endpoint. Application headers/method/body are preserved;
 // only proxy infrastructure headers and previously translated credentials are
@@ -110,6 +180,15 @@ func (h *Handler) serveTransparent(w http.ResponseWriter, r *http.Request, resol
 		return
 	}
 	copySafeRequestHeaders(req.Header, r.Header)
+	// buildTransparentUpstreamURL may have translated credentials in the body.
+	// Preserve the resulting framing instead of silently changing a fixed-length
+	// POST into chunked transfer encoding.
+	req.ContentLength = r.ContentLength
+	req.GetBody = r.GetBody
+	// Structured proxy responses must be available in identity form so embedded
+	// provider URLs/credentials can be rewritten. The transport itself has
+	// automatic decompression disabled, so removing this header is deterministic.
+	req.Header.Del("Accept-Encoding")
 
 	h.trace(r.Context(), "info", "upstream.request", "Outgoing transparent IPTV request to provider", map[string]any{
 		"direction":     "outgoing",
@@ -166,31 +245,40 @@ func (h *Handler) serveTransparent(w http.ResponseWriter, r *http.Request, resol
 	}
 
 	structured := looksLikeJSONResponse(resp, target) || looksLikeXMLResponse(resp, target, endpoint) || looksLikeM3UResponse(resp, target, endpoint)
-	if !structured || resp.Header.Get("Content-Encoding") != "" {
-		w.WriteHeader(resp.StatusCode)
-		controller := http.NewResponseController(w)
-		buf := make([]byte, 128*1024)
-		for {
-			n, readErr := resp.Body.Read(buf)
-			if n > 0 {
-				if _, writeErr := w.Write(buf[:n]); writeErr != nil {
-					return
-				}
-				_ = controller.Flush()
-			}
-			if readErr != nil {
-				return
-			}
-		}
+	if resp.Header.Get("Content-Encoding") != "" {
+		writeTransparentPassthrough(w, resp, nil)
+		return
 	}
 
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxDirectMetadataBytes+1))
+	var prefix []byte
+	if !structured {
+		if !shouldSniffTransparentResponse(resp) {
+			writeTransparentPassthrough(w, resp, nil)
+			return
+		}
+		prefix, err = io.ReadAll(io.LimitReader(resp.Body, transparentSniffBytes))
+		if err != nil {
+			transparentGatewayError(w, err.Error())
+			return
+		}
+		if !looksLikeStructuredBodyPrefix(prefix) {
+			writeTransparentPassthrough(w, resp, prefix)
+			return
+		}
+		structured = true
+	}
+
+	reader := io.Reader(resp.Body)
+	if len(prefix) > 0 {
+		reader = io.MultiReader(bytes.NewReader(prefix), resp.Body)
+	}
+	body, err := io.ReadAll(io.LimitReader(reader, maxDirectMetadataBytes+1))
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadGateway)
+		transparentGatewayError(w, err.Error())
 		return
 	}
 	if len(body) > maxDirectMetadataBytes {
-		http.Error(w, "provider structured response is too large", http.StatusBadGateway)
+		transparentGatewayError(w, "provider structured response is too large")
 		return
 	}
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
