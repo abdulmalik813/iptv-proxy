@@ -41,7 +41,11 @@ func (h *Handler) StartWarmAllCache() (BulkCacheState, bool, error) {
 	}
 
 	go func(initial BulkCacheState) {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+		// The five heavy datasets are intentionally warmed sequentially so we do
+		// not hammer a one-connection IPTV provider. Individual large catalogs can
+		// legitimately take up to 30 minutes, so the detached bulk job needs a
+		// wider envelope than a single entry.
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Hour)
 		defer cancel()
 		final := h.runWarmAllCache(ctx, initial)
 		h.finishBulkCacheRefresh(final)
