@@ -41,7 +41,7 @@ func TestXtreamRequestValuesSupportsPostForm(t *testing.T) {
 func TestRewriteXtreamBootstrapUsesLocalCredentialsAndDefaultBase(t *testing.T) {
 	h := &Handler{appURL: "https://iptv.example.test"}
 	resolved := routing.Resolved{
-		Provider: provider.Provider{ID: "provider-1", Route: "trex"},
+		Provider:  provider.Provider{ID: "provider-1", Route: "trex"},
 		MatchedBy: routing.MatchDefault,
 	}
 	clientUser := provider.User{Username: "living-room", ClientPassword: "local-secret"}
@@ -71,7 +71,7 @@ func TestRewriteXtreamBootstrapUsesLocalCredentialsAndDefaultBase(t *testing.T) 
 func TestRewriteXtreamBootstrapPreservesProviderRoute(t *testing.T) {
 	h := &Handler{appURL: "https://iptv.example.test"}
 	resolved := routing.Resolved{
-		Provider: provider.Provider{ID: "provider-2", Route: "backup"},
+		Provider:  provider.Provider{ID: "provider-2", Route: "backup"},
 		MatchedBy: routing.MatchRoute,
 	}
 	clientUser := provider.User{Username: "user", ClientPassword: "pass"}
