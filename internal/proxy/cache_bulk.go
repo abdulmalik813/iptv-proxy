@@ -14,8 +14,8 @@ import (
 const (
 	bulkCacheLockKey    = "iptv:cache-bulk-lock"
 	bulkCacheStateKey   = "iptv:cache-bulk-state"
-	bulkCacheLockTTL    = 35 * time.Minute
-	bulkCacheActiveTTL  = 40 * time.Minute
+	bulkCacheLockTTL    = 3*time.Hour + 10*time.Minute
+	bulkCacheActiveTTL  = 3*time.Hour + 15*time.Minute
 	bulkCacheHistoryTTL = 7 * 24 * time.Hour
 )
 

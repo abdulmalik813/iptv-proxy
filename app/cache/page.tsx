@@ -139,8 +139,14 @@ export default function CachePage() {
   const [busyKey, setBusyKey] = React.useState<string | null>(null);
   const [error, setError] = React.useState<string | null>(null);
   const [message, setMessage] = React.useState<string | null>(null);
+  const loadInFlight = React.useRef(false);
 
   const load = React.useCallback(async (silent = false) => {
+    // Do not stack status requests while Redis is busy publishing a large
+    // generation. The old 3-second interval could start several overlapping
+    // requests, making a temporary delay progressively worse.
+    if (loadInFlight.current) return;
+    loadInFlight.current = true;
     if (!silent) setLoading(true);
     try {
       const cacheResponse = await fetch(apiPath('/api/system/cache'), { cache: 'no-store' });
@@ -152,16 +158,18 @@ export default function CachePage() {
       setStats(cachePayload.stats || emptyStats);
       setStates(Array.isArray(cachePayload.states) ? cachePayload.states : []);
       setBulk(cachePayload.bulk || idleBulk);
+      if (!silent) setError(null);
     } catch (err) {
       if (!silent) setError(err instanceof Error ? err.message : String(err));
     } finally {
+      loadInFlight.current = false;
       if (!silent) setLoading(false);
     }
   }, []);
 
   React.useEffect(() => {
     void load();
-    const timer = window.setInterval(() => void load(true), 3_000);
+    const timer = window.setInterval(() => void load(true), 5_000);
     return () => window.clearInterval(timer);
   }, [load]);
 

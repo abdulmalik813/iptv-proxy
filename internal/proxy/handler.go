@@ -47,6 +47,12 @@ func NewHandler(resolver *routing.Resolver, cache *cachepkg.Manager, redisClient
 		ResponseHeaderTimeout: 10 * time.Minute,
 		DisableCompression:    true,
 	}
+	metadataTransport := transport.Clone()
+	// Heavy catalogs can be hundreds of megabytes. Let Go negotiate gzip for
+	// metadata only and transparently decompress before validation/canonical
+	// rewriting. Media transport remains byte-for-byte and uncompressed.
+	metadataTransport.DisableCompression = false
+	metadataTransport.ResponseHeaderTimeout = 60 * time.Second
 	return &Handler{
 		resolver: resolver,
 		cache:    cache,
@@ -55,8 +61,8 @@ func NewHandler(resolver *routing.Resolver, cache *cachepkg.Manager, redisClient
 		logger:   logger,
 		appURL:   strings.TrimSuffix(appURL, "/"),
 		metadataClient: &http.Client{
-			Transport: transport.Clone(),
-			Timeout:   10 * time.Minute,
+			Transport: metadataTransport,
+			Timeout:   30 * time.Minute,
 		},
 		streamClient: &http.Client{Transport: transport.Clone()},
 	}

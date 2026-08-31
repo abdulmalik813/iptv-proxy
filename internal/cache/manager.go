@@ -22,8 +22,8 @@ import (
 const (
 	refreshThreshold             = 0.30
 	bodyChunkSize                = 8 * 1024 * 1024
-	fetchTimeout                 = 10 * time.Minute
-	lockTTL                      = 12 * time.Minute
+	fetchTimeout                 = 30 * time.Minute
+	lockTTL                      = 35 * time.Minute
 	stagingGenerationTTL         = 2 * time.Hour
 	retiredGenerationFallbackTTL = time.Hour
 )
@@ -535,6 +535,13 @@ func (m *Manager) Stats(ctx context.Context) (Stats, error) {
 	if err != nil {
 		return Stats{}, err
 	}
+	return m.StatsFromEntries(entries), nil
+}
+
+// StatsFromEntries computes runtime counters from an entry list that was
+// already loaded. Admin status endpoints use this to avoid scanning Redis twice
+// for the same response while a large generation is being published.
+func (m *Manager) StatsFromEntries(entries []Entry) Stats {
 	var storedBytes int64
 	for _, entry := range entries {
 		storedBytes += entry.SizeBytes
@@ -553,7 +560,7 @@ func (m *Manager) Stats(ctx context.Context) (Stats, error) {
 		RegisteredRefreshes: registered,
 		ActiveReaders:       activeReaders,
 		RetiredGenerations:  retired,
-	}, nil
+	}
 }
 
 func (m *Manager) get(ctx context.Context, key string) (Response, manifest, bool, error) {

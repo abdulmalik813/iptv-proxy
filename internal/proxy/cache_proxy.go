@@ -15,6 +15,9 @@ import (
 	"github.com/abdulmalik813/iptv-proxy/internal/provider"
 )
 
+const metadataProgressBytes = 16 * 1024 * 1024
+const metadataProgressInterval = 5 * time.Second
+
 func (h *Handler) serveCached(w http.ResponseWriter, r *http.Request, p provider.Provider, clientUser provider.User, endpoint string, upstreamURL *url.URL) {
 	spec := h.newCacheSpec(p, endpoint, upstreamURL, r.Header.Clone())
 	response, fromCache, err := h.cache.GetOrFetch(r.Context(), spec)
@@ -108,8 +111,9 @@ func (h *Handler) fetchCacheable(ctx context.Context, p provider.Provider, endpo
 		return cachepkg.Response{}, err
 	}
 	copySafeRequestHeaders(req.Header, sourceHeaders)
-	// Cache validation operates on the provider's original JSON/XML/M3U bytes.
-	// Asking for identity encoding also avoids storing client-specific compressed variants.
+	// Cache validation/rewrite operates on decompressed provider bytes. Leave
+	// Accept-Encoding unset so the metadata transport can negotiate gzip and Go
+	// can transparently decompress it before this function sees the body.
 	req.Header.Del("Accept-Encoding")
 	outgoingURL := safeURLString(target.String())
 	h.trace(ctx, "info", "upstream.request", "Outgoing metadata request to IPTV provider", map[string]any{
@@ -143,7 +147,7 @@ func (h *Handler) fetchCacheable(ctx context.Context, p provider.Provider, endpo
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := h.readMetadataBodyWithProgress(ctx, p, endpoint, target, resp.Body, resp.ContentLength, resp.Uncompressed, started)
 	if err != nil {
 		return cachepkg.Response{}, err
 	}
@@ -164,6 +168,7 @@ func (h *Handler) fetchCacheable(ctx context.Context, p provider.Provider, endpo
 		"status":        resp.StatusCode,
 		"contentType":   resp.Header.Get("Content-Type"),
 		"contentLength": resp.ContentLength,
+		"uncompressed":  resp.Uncompressed,
 		"bytes":         len(body),
 		"items":         itemsForLog,
 		"elapsedMs":     time.Since(started).Milliseconds(),
@@ -175,6 +180,14 @@ func (h *Handler) fetchCacheable(ctx context.Context, p provider.Provider, endpo
 		return cachepkg.Response{}, err
 	}
 
+	rewriteStarted := time.Now()
+	h.trace(ctx, "debug", "cache.rewrite.start", "Canonical cache rewrite started", map[string]any{
+		"providerId":   p.ID,
+		"providerName": p.Name,
+		"endpoint":     endpoint,
+		"action":       target.Query().Get("action"),
+		"bytes":        len(body),
+	})
 	// Do every expensive shared rewrite exactly once for this generation, after
 	// validation but before Redis publish. Artwork and direct_source cleanup are
 	// shared. Provider-owned URLs are converted to the local proxy namespace with
@@ -191,6 +204,14 @@ func (h *Handler) fetchCacheable(ctx context.Context, p provider.Provider, endpo
 		body = h.rewriteM3UPlaylistWithCredentials(p, credentials, body)
 		body = h.rewriteOpaqueMediaM3U(ctx, p, body)
 	}
+	h.trace(ctx, "debug", "cache.rewrite.completed", "Canonical cache rewrite completed", map[string]any{
+		"providerId":   p.ID,
+		"providerName": p.Name,
+		"endpoint":     endpoint,
+		"action":       target.Query().Get("action"),
+		"bytes":        len(body),
+		"elapsedMs":    time.Since(rewriteStarted).Milliseconds(),
+	})
 
 	return cachepkg.Response{
 		Status:         resp.StatusCode,
@@ -199,6 +220,48 @@ func (h *Handler) fetchCacheable(ctx context.Context, p provider.Provider, endpo
 		ItemCount:      itemCount,
 		ItemCountKnown: itemCountKnown,
 	}, nil
+}
+
+func (h *Handler) readMetadataBodyWithProgress(ctx context.Context, p provider.Provider, endpoint string, target *url.URL, reader io.Reader, contentLength int64, uncompressed bool, started time.Time) ([]byte, error) {
+	var buffer bytes.Buffer
+	if contentLength > 0 && contentLength <= int64(^uint(0)>>1) {
+		buffer.Grow(int(contentLength))
+	}
+	scratch := make([]byte, 256*1024)
+	var total int64
+	var lastLoggedBytes int64
+	lastLoggedAt := time.Now()
+	for {
+		n, err := reader.Read(scratch)
+		if n > 0 {
+			_, _ = buffer.Write(scratch[:n])
+			total += int64(n)
+			if total-lastLoggedBytes >= metadataProgressBytes || time.Since(lastLoggedAt) >= metadataProgressInterval {
+				h.trace(ctx, "debug", "cache.download.progress", "IPTV metadata download is still progressing", map[string]any{
+					"providerId":    p.ID,
+					"providerName":  p.Name,
+					"endpoint":      endpoint,
+					"action":        target.Query().Get("action"),
+					"bytesReceived": total,
+					"contentLength": contentLength,
+					"uncompressed":  uncompressed,
+					"elapsedMs":     time.Since(started).Milliseconds(),
+				})
+				lastLoggedBytes = total
+				lastLoggedAt = time.Now()
+			}
+		}
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, err
+		}
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+	}
+	return buffer.Bytes(), nil
 }
 
 func validateCacheBody(endpoint string, body []byte) error {
