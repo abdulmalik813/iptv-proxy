@@ -209,3 +209,35 @@ func (h *Handler) rewriteOpaqueMediaJSONValue(ctx context.Context, p provider.Pr
 	}
 	return changed
 }
+
+// M3U entries are media destinations by definition. After normal Xtream URLs
+// have been rewritten to the public proxy namespace, any remaining provider/CDN
+// media target is wrapped as an exact opaque URL. Pipe options are preserved.
+func (h *Handler) rewriteOpaqueMediaM3U(ctx context.Context, p provider.Provider, body []byte) []byte {
+	lines := bytes.Split(body, []byte("\n"))
+	changed := false
+	for index, rawLine := range lines {
+		line := string(rawLine)
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		urlPart, pipeOptions := splitM3UPipeOptions(trimmed)
+		target, ok := resolveProviderReference(p, urlPart)
+		if !ok || h.isLocalProxyURL(target.String()) {
+			continue
+		}
+		replacement, ok := h.rewriteOpaqueMediaURL(ctx, p, target.String())
+		if !ok {
+			continue
+		}
+		leading := line[:len(line)-len(strings.TrimLeft(line, " \t"))]
+		trailing := line[len(strings.TrimRight(line, " \t")):]
+		lines[index] = []byte(leading + replacement + pipeOptions + trailing)
+		changed = true
+	}
+	if !changed {
+		return body
+	}
+	return bytes.Join(lines, []byte("\n"))
+}
