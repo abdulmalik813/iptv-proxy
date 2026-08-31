@@ -66,6 +66,7 @@ func (h *Handler) rewriteTransparentBody(ctxRequest *http.Request, resolved rout
 	if looksLikeJSONResponse(resp, target) || json.Valid(bytes.TrimSpace(body)) {
 		body = h.rewriteXtreamBootstrap(resolved, clientUser, body)
 		body = rewriteXtreamJSONURLs(resolved.Provider, clientUser, publicBase, body)
+		body = h.rewriteOpaqueMediaJSON(ctxRequest.Context(), resolved.Provider, body)
 		body = h.rewriteJSONArtwork(ctxRequest.Context(), resolved.Provider, body)
 		return body, "application/json"
 	}
@@ -90,6 +91,7 @@ func (h *Handler) rewriteTransparentBody(ctxRequest *http.Request, resolved rout
 		}
 		body = h.rewriteM3UArtwork(ctxRequest.Context(), resolved.Provider, body)
 		body = h.rewriteM3UPlaylist(resolved.Provider, clientUser, body)
+		body = h.rewriteOpaqueMediaM3U(ctxRequest.Context(), resolved.Provider, body)
 		return body, "audio/x-mpegurl"
 	}
 	return body, resp.Header.Get("Content-Type")
