@@ -93,6 +93,25 @@ func sniffArtworkContentType(body []byte) string {
 	if len(body) >= 2 && bytes.Equal(body[:2], []byte("BM")) {
 		return "image/bmp"
 	}
+	if len(body) >= 4 && (bytes.Equal(body[:4], []byte{'I', 'I', 0x2a, 0x00}) || bytes.Equal(body[:4], []byte{'M', 'M', 0x00, 0x2a})) {
+		return "image/tiff"
+	}
+	// AVIF/HEIC are ISO-BMFF images. Respect the client's original Accept header
+	// by validating these modern formats rather than forcing the upstream CDN to
+	// return a legacy image type.
+	if len(body) >= 12 && bytes.Equal(body[4:8], []byte("ftyp")) {
+		probe := body[8:min(len(body), 64)]
+		for _, brand := range [][]byte{[]byte("avif"), []byte("avis")} {
+			if bytes.Contains(probe, brand) {
+				return "image/avif"
+			}
+		}
+		for _, brand := range [][]byte{[]byte("heic"), []byte("heix"), []byte("hevc"), []byte("hevx"), []byte("heim"), []byte("heis")} {
+			if bytes.Contains(probe, brand) {
+				return "image/heic"
+			}
+		}
+	}
 
 	sample := bytes.TrimSpace(body[:min(len(body), 8192)])
 	if len(sample) >= 3 && bytes.Equal(sample[:3], []byte{0xef, 0xbb, 0xbf}) {

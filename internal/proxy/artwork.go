@@ -167,6 +167,12 @@ func (h *Handler) serveArtworkToken(w http.ResponseWriter, r *http.Request, reso
 	encoded, err := h.redis.Get(r.Context(), key).Bytes()
 	if err != nil {
 		if errors.Is(err, redis.Nil) {
+			h.trace(r.Context(), "debug", "artwork.token_missing", "Artwork token is missing or expired", map[string]any{
+				"providerId":   resolved.Provider.ID,
+				"providerName": resolved.Provider.Name,
+				"token":        token,
+			})
+			w.Header().Set("Cache-Control", "public, max-age=60")
 			http.NotFound(w, r)
 			return
 		}
@@ -175,18 +181,25 @@ func (h *Handler) serveArtworkToken(w http.ResponseWriter, r *http.Request, reso
 	}
 	_ = h.redis.Expire(r.Context(), key, artworkTokenTTL).Err()
 
-	if failed, _ := h.redis.Exists(r.Context(), artworkFailureKey(token)).Result(); failed > 0 {
+	if reason, err := h.redis.Get(r.Context(), artworkFailureKey(token)).Result(); err == nil {
 		h.trace(r.Context(), "debug", "artwork.negative_cache", "Skipping temporarily unavailable artwork target", map[string]any{
 			"providerId":   resolved.Provider.ID,
 			"providerName": resolved.Provider.Name,
 			"token":        token,
+			"reason":       reason,
 		})
+		w.Header().Set("Cache-Control", "public, max-age="+strconv.Itoa(int(artworkFailureTTL/time.Second)))
 		http.NotFound(w, r)
 		return
 	}
 
 	var target artworkTarget
 	if err := json.Unmarshal(encoded, &target); err != nil || target.ProviderID != resolved.Provider.ID {
+		h.trace(r.Context(), "debug", "artwork.token_invalid", "Artwork token does not match the resolved provider", map[string]any{
+			"providerId":   resolved.Provider.ID,
+			"providerName": resolved.Provider.Name,
+			"token":        token,
+		})
 		http.NotFound(w, r)
 		return
 	}
@@ -201,24 +214,28 @@ func (h *Handler) serveArtworkToken(w http.ResponseWriter, r *http.Request, reso
 func (h *Handler) serveArtwork(w http.ResponseWriter, r *http.Request, p provider.Provider, target *url.URL, token string) {
 	started := time.Now()
 	outgoingURL := safeURLString(target.String())
-	req, err := http.NewRequestWithContext(r.Context(), r.Method, target.String(), nil)
+
+	// Always validate artwork with an upstream GET. Some provider/CDN image
+	// servers reject HEAD even when GET succeeds; letting that HEAD failure enter
+	// the negative cache would make a later legitimate GET fail for five minutes.
+	upstreamMethod := http.MethodGet
+	req, err := http.NewRequestWithContext(r.Context(), upstreamMethod, target.String(), nil)
 	if err != nil {
 		h.rememberArtworkFailure(r.Context(), token, "invalid request")
 		http.Error(w, "artwork unavailable", http.StatusBadGateway)
 		return
 	}
 	copySafeRequestHeaders(req.Header, r.Header)
-	// Image fetching is intentionally not Range-driven. Fetch a small complete
-	// asset so we can validate its magic bytes and avoid forwarding an HTML error
-	// page as a poster. This also prevents client probe patterns from multiplying
-	// requests to fragile provider/CDN image hosts.
-	req.Header.Del("Range")
-	req.Header.Del("If-Range")
-	req.Header.Del("Accept-Encoding")
-	req.Header.Del("Content-Length")
+	// Image fetching is intentionally not Range/conditional driven. Fetch one
+	// bounded complete asset so its bytes can be validated and a client probe
+	// cannot poison the shared token with a 304/403/405 response.
+	for _, key := range []string{"Range", "If-Range", "If-Match", "If-None-Match", "If-Modified-Since", "If-Unmodified-Since", "Accept-Encoding", "Content-Length"} {
+		req.Header.Del(key)
+	}
 	h.trace(r.Context(), "info", "upstream.request", "Outgoing artwork request to provider/CDN", map[string]any{
 		"direction":    "outgoing",
-		"method":       r.Method,
+		"method":       upstreamMethod,
+		"clientMethod": r.Method,
 		"url":          outgoingURL,
 		"outgoingUrl":  outgoingURL,
 		"providerId":   p.ID,
@@ -230,7 +247,8 @@ func (h *Handler) serveArtwork(w http.ResponseWriter, r *http.Request, p provide
 		h.rememberArtworkFailure(r.Context(), token, err.Error())
 		h.trace(r.Context(), "error", "upstream.error", "Outgoing artwork request failed", map[string]any{
 			"direction":    "outgoing",
-			"method":       r.Method,
+			"method":       upstreamMethod,
+			"clientMethod": r.Method,
 			"url":          outgoingURL,
 			"outgoingUrl":  outgoingURL,
 			"providerId":   p.ID,
@@ -245,7 +263,8 @@ func (h *Handler) serveArtwork(w http.ResponseWriter, r *http.Request, p provide
 	defer resp.Body.Close()
 	h.trace(r.Context(), "info", "upstream.response", "Incoming artwork response from provider/CDN", map[string]any{
 		"direction":     "incoming",
-		"method":        r.Method,
+		"method":        upstreamMethod,
+		"clientMethod":  r.Method,
 		"url":           outgoingURL,
 		"outgoingUrl":   outgoingURL,
 		"providerId":    p.ID,
@@ -264,12 +283,6 @@ func (h *Handler) serveArtwork(w http.ResponseWriter, r *http.Request, p provide
 			status = http.StatusBadGateway
 		}
 		http.Error(w, "artwork unavailable", status)
-		return
-	}
-	if r.Method == http.MethodHead {
-		h.clearArtworkFailure(r.Context(), token)
-		copyResponseHeaders(w.Header(), resp.Header)
-		w.WriteHeader(http.StatusOK)
 		return
 	}
 	if resp.ContentLength > artworkMaxBytes {
@@ -315,5 +328,8 @@ func (h *Handler) serveArtwork(w http.ResponseWriter, r *http.Request, p provide
 		w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; sandbox")
 	}
 	w.WriteHeader(http.StatusOK)
+	if r.Method == http.MethodHead {
+		return
+	}
 	_, _ = w.Write(body)
 }
