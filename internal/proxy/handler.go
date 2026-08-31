@@ -1,7 +1,6 @@
 package proxy
 
 import (
-	"errors"
 	"net/http"
 	"net/url"
 	"path"
@@ -25,23 +24,6 @@ var cacheablePlayerActions = map[string]bool{
 	"get_live_streams": true,
 	"get_vod_streams":  true,
 	"get_series":       true,
-}
-
-// These are the username/password-authenticated, client-facing Xtream routes.
-// Admin/system APIs and MAG/Stalker portal routes are deliberately not exposed:
-// they use different trust models and are not part of an Xtream player account.
-var supportedEndpoints = map[string]bool{
-	"player_api.php": true,
-	"panel_api.php":  true,
-	"enigma2.php":    true,
-	"get.php":        true,
-	"xmltv.php":      true,
-	"live":           true,
-	"movie":          true,
-	"series":         true,
-	"timeshift":      true,
-	"streaming":      true,
-	"hls":            true,
 }
 
 type Handler struct {
@@ -149,10 +131,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Xtream clients are inconsistent about GET versus POST. Smarters and a
-	// number of compatible apps send metadata/login API calls as form bodies.
-	// Merge those values into the query before authentication/routing so the rest
-	// of the proxy has one canonical representation.
+	// Existing well-known metadata POSTs are still normalized for this first
+	// redesign step. A following step moves credential translation into the body
+	// rewriter so transparent fallback routes can preserve POST bodies verbatim.
 	remainingEndpoint := strings.Split(strings.TrimPrefix(resolved.RemainingPath, "/"), "/")[0]
 	if isMetadataEndpoint(remainingEndpoint) && r.Method == http.MethodPost {
 		values, valuesErr := xtreamRequestValues(r)
@@ -170,7 +151,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		r.URL.RawQuery = values.Encode()
 	}
 
-	upstreamURL, endpoint, clientUser, err := buildUpstreamURL(resolved, r)
+	upstreamURL, endpoint, clientUser, err := buildTransparentUpstreamURL(resolved, r)
 	if err != nil {
 		h.trace(ctx, "warning", "request.rewrite", "IPTV request validation or rewrite failed", map[string]any{
 			"providerId":   resolved.Provider.ID,
@@ -179,7 +160,11 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			"incomingUrl":  incomingURL,
 			"error":        err.Error(),
 		})
-		http.Error(recorder, err.Error(), http.StatusUnauthorized)
+		status := http.StatusUnauthorized
+		if strings.Contains(err.Error(), "management endpoint") {
+			status = http.StatusForbidden
+		}
+		http.Error(recorder, err.Error(), status)
 		return
 	}
 	completionMeta["endpoint"] = endpoint
@@ -189,7 +174,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	meta["incomingUrl"] = incomingURL
 	meta["clientUsername"] = clientUser.Username
 	meta["clientUserId"] = clientUser.ID
-	h.trace(ctx, "debug", "request.rewrite", "Request authenticated and rewritten for upstream provider", meta)
+	h.trace(ctx, "debug", "request.rewrite", "Request authenticated and transparently rewritten for upstream provider", meta)
 
 	if isCacheable(endpoint, r.URL.Query()) {
 		h.trace(ctx, "debug", "cache.route", "Request routed through metadata cache", providerMeta(resolved.Provider, endpoint, upstreamURL))
@@ -206,119 +191,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.serveLiveMultiplexed(recorder, r, resolved.Provider, upstreamURL)
 		return
 	}
-	h.trace(ctx, "debug", "direct.route", "Request routed through direct media proxy", providerMeta(resolved.Provider, endpoint, upstreamURL))
+	h.trace(ctx, "debug", "direct.route", "Request routed through transparent direct proxy", providerMeta(resolved.Provider, endpoint, upstreamURL))
 	h.serveDirect(recorder, r, resolved.Provider, upstreamURL)
-}
-
-func buildUpstreamURL(resolved routing.Resolved, r *http.Request) (*url.URL, string, provider.User, error) {
-	p := resolved.Provider
-	base, err := url.Parse(strings.TrimSuffix(p.Host, "/"))
-	if err != nil {
-		return nil, "", provider.User{}, err
-	}
-	remaining := resolved.RemainingPath
-	parts := strings.Split(strings.TrimPrefix(remaining, "/"), "/")
-	endpoint := ""
-	if len(parts) > 0 {
-		endpoint = parts[0]
-	}
-
-	q := r.URL.Query()
-	clientUser := provider.User{}
-	authenticate := func(username, password string) error {
-		if user, ok := p.Authenticate(username, password); ok {
-			clientUser = user
-			return nil
-		}
-		// A few Xtream clients send literal '+' characters in form/query values
-		// without percent-encoding them. net/url decodes those as spaces. Exact
-		// credentials always win; this fallback is attempted only after exact auth
-		// fails, so legitimate passwords containing spaces continue to work.
-		plusUsername := strings.ReplaceAll(username, " ", "+")
-		plusPassword := strings.ReplaceAll(password, " ", "+")
-		if (plusUsername != username || plusPassword != password) && plusUsername != "" && plusPassword != "" {
-			if user, ok := p.Authenticate(plusUsername, plusPassword); ok {
-				clientUser = user
-				return nil
-			}
-		}
-		return errors.New("invalid IPTV credentials")
-	}
-
-	// Xtream's newer nginx rewrite also accepts /{user}/{pass}/{stream_id} as a
-	// live-stream alias. Handle it before rejecting an unknown first segment and
-	// normalize it to the canonical provider /live/... route upstream.
-	legacyBareLive := false
-	if !supportedEndpoints[endpoint] {
-		if len(parts) < 3 {
-			return nil, endpoint, provider.User{}, errors.New("unsupported IPTV endpoint")
-		}
-		if err := authenticate(parts[0], parts[1]); err != nil {
-			return nil, "live", provider.User{}, err
-		}
-		segments := []string{"live", p.UpstreamUsername, p.UpstreamPassword}
-		segments = append(segments, parts[2:]...)
-		remaining = "/" + strings.Join(segments, "/")
-		endpoint = "live"
-		legacyBareLive = true
-	}
-
-	if !legacyBareLive {
-		switch endpoint {
-		case "player_api.php", "panel_api.php", "enigma2.php", "get.php", "xmltv.php":
-			if err := authenticate(q.Get("username"), q.Get("password")); err != nil {
-				return nil, endpoint, provider.User{}, err
-			}
-			q.Set("username", p.UpstreamUsername)
-			q.Set("password", p.UpstreamPassword)
-		case "live", "movie", "series":
-			segments := strings.Split(strings.TrimPrefix(remaining, "/"), "/")
-			if len(segments) < 4 {
-				return nil, endpoint, provider.User{}, errors.New("invalid IPTV stream path")
-			}
-			if err := authenticate(segments[1], segments[2]); err != nil {
-				return nil, endpoint, provider.User{}, err
-			}
-			segments[1] = p.UpstreamUsername
-			segments[2] = p.UpstreamPassword
-			remaining = "/" + strings.Join(segments, "/")
-		case "hls":
-			segments := strings.Split(strings.TrimPrefix(remaining, "/"), "/")
-			if len(segments) < 5 {
-				return nil, endpoint, provider.User{}, errors.New("invalid IPTV HLS segment path")
-			}
-			if err := authenticate(segments[1], segments[2]); err != nil {
-				return nil, endpoint, provider.User{}, err
-			}
-			segments[1] = p.UpstreamUsername
-			segments[2] = p.UpstreamPassword
-			remaining = "/" + strings.Join(segments, "/")
-		case "timeshift":
-			segments := strings.Split(strings.TrimPrefix(remaining, "/"), "/")
-			if len(segments) < 6 {
-				return nil, endpoint, provider.User{}, errors.New("invalid IPTV timeshift path")
-			}
-			if err := authenticate(segments[1], segments[2]); err != nil {
-				return nil, endpoint, provider.User{}, err
-			}
-			segments[1] = p.UpstreamUsername
-			segments[2] = p.UpstreamPassword
-			remaining = "/" + strings.Join(segments, "/")
-		case "streaming":
-			if len(parts) < 2 || !strings.EqualFold(parts[1], "timeshift.php") {
-				return nil, endpoint, provider.User{}, errors.New("unsupported streaming endpoint")
-			}
-			if err := authenticate(q.Get("username"), q.Get("password")); err != nil {
-				return nil, endpoint, provider.User{}, err
-			}
-			q.Set("username", p.UpstreamUsername)
-			q.Set("password", p.UpstreamPassword)
-		}
-	}
-
-	base.Path = strings.TrimSuffix(base.Path, "/") + remaining
-	base.RawQuery = q.Encode()
-	return base, endpoint, clientUser, nil
 }
 
 func isCacheable(endpoint string, q url.Values) bool {
