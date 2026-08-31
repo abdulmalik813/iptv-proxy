@@ -15,7 +15,13 @@ var (
 )
 
 func (h *Handler) rewriteM3UPlaylist(p provider.Provider, clientUser provider.User, body []byte) []byte {
-	return h.rewriteM3UPlaylistWithCredentials(p, clientXtreamCredentials(clientUser), body)
+	credentials := xtreamRewriteCredentials{
+		PathUsername:  clientUser.Username,
+		PathPassword:  clientUser.ClientPassword,
+		QueryUsername: clientUser.Username,
+		QueryPassword: clientUser.ClientPassword,
+	}
+	return h.rewriteM3UPlaylistWithCredentials(p, credentials, body)
 }
 
 func (h *Handler) rewriteM3UPlaylistWithCredentials(p provider.Provider, credentials xtreamRewriteCredentials, body []byte) []byte {
