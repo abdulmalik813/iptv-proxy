@@ -20,18 +20,18 @@ const maxDirectMetadataBytes = 256 << 20
 
 func isMetadataEndpoint(endpoint string) bool {
 	switch endpoint {
-	case "player_api.php", "get.php", "xmltv.php":
+	case "player_api.php", "panel_api.php", "enigma2.php", "get.php", "xmltv.php":
 		return true
 	default:
 		return false
 	}
 }
 
-// xtreamRequestValues accepts both the normal Xtream GET form and the POST
-// application/x-www-form-urlencoded form used by players such as Smarters.
-// POST values override query-string values, matching normal HTML form behavior.
-// The body is restored because request logging and any later handler may still
-// need to inspect it.
+// xtreamRequestValues accepts the normal Xtream query-string form, POST
+// application/x-www-form-urlencoded, the empty JSON object sent by some
+// Smarters builds, and simple JSON object POSTs used by a few compatible apps.
+// POST values override query values. The body is restored because logging or a
+// later handler may still need to inspect it.
 func xtreamRequestValues(r *http.Request) (url.Values, error) {
 	values := cloneURLValues(r.URL.Query())
 	if r.Method != http.MethodPost || r.Body == nil {
@@ -48,6 +48,32 @@ func xtreamRequestValues(r *http.Request) (url.Values, error) {
 	}
 	if len(body) > maxXtreamFormBytes {
 		return nil, fmt.Errorf("Xtream form body is too large")
+	}
+
+	trimmed := bytes.TrimSpace(body)
+	if bytes.Equal(trimmed, []byte("{}")) {
+		return values, nil
+	}
+	if len(trimmed) > 0 && trimmed[0] == '{' {
+		decoder := json.NewDecoder(bytes.NewReader(trimmed))
+		decoder.UseNumber()
+		var payload map[string]any
+		if err := decoder.Decode(&payload); err != nil {
+			return nil, fmt.Errorf("parse Xtream JSON body: %w", err)
+		}
+		for key, raw := range payload {
+			switch value := raw.(type) {
+			case string:
+				values.Set(key, value)
+			case json.Number:
+				values.Set(key, value.String())
+			case bool:
+				values.Set(key, strconv.FormatBool(value))
+			case nil:
+				values.Del(key)
+			}
+		}
+		return values, nil
 	}
 
 	form, err := url.ParseQuery(string(body))
@@ -69,8 +95,8 @@ func cloneURLValues(input url.Values) url.Values {
 }
 
 // serveDirectMetadata handles metadata actions that intentionally bypass the
-// persistent catalog cache. They still need the same credential isolation and
-// artwork rewriting as cached responses. Client POST calls are normalized to a
+// persistent catalog cache. They still need credential isolation, local URL
+// rewriting and artwork rewriting. Client POST calls are normalized to a
 // provider GET so local credentials from the POST body can never leak upstream.
 func (h *Handler) serveDirectMetadata(w http.ResponseWriter, r *http.Request, resolved routing.Resolved, clientUser provider.User, endpoint string, target *url.URL) {
 	if r.Method != http.MethodGet && r.Method != http.MethodPost && r.Method != http.MethodHead {
@@ -95,6 +121,10 @@ func (h *Handler) serveDirectMetadata(w http.ResponseWriter, r *http.Request, re
 	req.Header.Del("Content-Length")
 	req.Header.Del("Content-Type")
 
+	operation := target.Query().Get("action")
+	if operation == "" {
+		operation = target.Query().Get("type")
+	}
 	h.trace(r.Context(), "info", "upstream.request", "Outgoing metadata request to IPTV provider", map[string]any{
 		"direction":     "outgoing",
 		"method":        upstreamMethod,
@@ -104,7 +134,7 @@ func (h *Handler) serveDirectMetadata(w http.ResponseWriter, r *http.Request, re
 		"providerName":  resolved.Provider.Name,
 		"providerRoute": resolved.Provider.Route,
 		"endpoint":      endpoint,
-		"action":        target.Query().Get("action"),
+		"action":        operation,
 		"clientMethod":  r.Method,
 	})
 
@@ -118,7 +148,7 @@ func (h *Handler) serveDirectMetadata(w http.ResponseWriter, r *http.Request, re
 			"providerId":   resolved.Provider.ID,
 			"providerName": resolved.Provider.Name,
 			"endpoint":     endpoint,
-			"action":       target.Query().Get("action"),
+			"action":       operation,
 			"elapsedMs":    time.Since(started).Milliseconds(),
 			"error":        err.Error(),
 		})
@@ -145,17 +175,22 @@ func (h *Handler) serveDirectMetadata(w http.ResponseWriter, r *http.Request, re
 	}
 
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 && resp.Header.Get("Content-Encoding") == "" {
+		publicBase := h.xtreamPublicBase(resolved)
 		switch endpoint {
-		case "player_api.php":
-			// Apply this to every Player API action, not only the empty-action login.
-			// rewriteXtreamBootstrap is a no-op for normal lists/details, but account
-			// aliases such as get_account_info can return user_info and otherwise leak
-			// the upstream username/password back to strict Xtream clients.
+		case "player_api.php", "panel_api.php":
+			// Apply account sanitization to every JSON API response containing
+			// user_info, not only the empty-action login. Some panel/account aliases
+			// otherwise echo the upstream credentials and provider host back to the
+			// player, which makes it leave the proxy on its next request.
 			body = h.rewriteXtreamBootstrap(resolved, clientUser, body)
+			body = rewriteXtreamJSONURLs(resolved.Provider, clientUser, publicBase, body)
 			body = h.rewriteCachedArtwork(r.Context(), resolved.Provider, endpoint, body)
 			if json.Valid(body) {
 				w.Header().Set("Content-Type", "application/json")
 			}
+		case "enigma2.php":
+			body = rewriteXtreamXMLURLs(resolved.Provider, clientUser, publicBase, body)
+			w.Header().Set("Content-Type", "application/xml")
 		case "get.php":
 			body = h.rewriteCachedArtwork(r.Context(), resolved.Provider, endpoint, body)
 			body = h.rewriteM3UPlaylist(resolved.Provider, clientUser, body)
@@ -177,6 +212,10 @@ func (h *Handler) serveDirectMetadata(w http.ResponseWriter, r *http.Request, re
 }
 
 func (h *Handler) traceDirectMetadataResponse(r *http.Request, p provider.Provider, endpoint string, target *url.URL, resp *http.Response, bytesOut int, started time.Time) {
+	operation := target.Query().Get("action")
+	if operation == "" {
+		operation = target.Query().Get("type")
+	}
 	h.trace(r.Context(), "info", "upstream.response", "Incoming metadata response from IPTV provider", map[string]any{
 		"direction":     "incoming",
 		"method":        resp.Request.Method,
@@ -186,7 +225,7 @@ func (h *Handler) traceDirectMetadataResponse(r *http.Request, p provider.Provid
 		"providerName":  p.Name,
 		"providerRoute": p.Route,
 		"endpoint":      endpoint,
-		"action":        target.Query().Get("action"),
+		"action":        operation,
 		"status":        resp.StatusCode,
 		"contentType":   resp.Header.Get("Content-Type"),
 		"contentLength": resp.ContentLength,
@@ -196,7 +235,7 @@ func (h *Handler) traceDirectMetadataResponse(r *http.Request, p provider.Provid
 }
 
 // rewriteXtreamBootstrap keeps the provider's real subscription/account facts
-// but replaces the credentials and server identity echoed by player_api.php.
+// but replaces the credentials and server identity echoed by Player/Panel APIs.
 // Some players reuse these fields for every subsequent API call; exposing the
 // upstream values makes them leave the proxy and/or fail local authentication.
 func (h *Handler) rewriteXtreamBootstrap(resolved routing.Resolved, clientUser provider.User, body []byte) []byte {
