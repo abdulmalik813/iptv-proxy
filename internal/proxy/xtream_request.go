@@ -1,14 +1,21 @@
 package proxy
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 
 	"github.com/abdulmalik813/iptv-proxy/internal/provider"
 	"github.com/abdulmalik813/iptv-proxy/internal/routing"
 )
+
+const maxTransparentCredentialBodyBytes = 2 << 20
 
 // Transparent player forwarding is intentionally denylist-based rather than
 // endpoint-allowlist-based. Xtream-compatible apps and panels regularly add
@@ -75,10 +82,121 @@ func sameClientUser(left, right provider.User) bool {
 	return left.Username != "" && left.Username == right.Username
 }
 
+func restoreRequestBody(r *http.Request, body []byte) {
+	r.Body = io.NopCloser(bytes.NewReader(body))
+	r.ContentLength = int64(len(body))
+	r.GetBody = func() (io.ReadCloser, error) {
+		return io.NopCloser(bytes.NewReader(body)), nil
+	}
+	if r.Header != nil {
+		r.Header.Set("Content-Length", strconv.Itoa(len(body)))
+	}
+}
+
+// translateXtreamBodyCredentials handles form/JSON bodies without turning a
+// transparent POST into a provider GET. Unknown fields are retained; only a
+// credential pair that authenticates as a local client is substituted.
+func translateXtreamBodyCredentials(p provider.Provider, r *http.Request, selected provider.User) (provider.User, bool, error) {
+	if r == nil || r.Body == nil || r.Method == http.MethodGet || r.Method == http.MethodHead {
+		return selected, false, nil
+	}
+	contentType := strings.ToLower(r.Header.Get("Content-Type"))
+	if !strings.Contains(contentType, "application/x-www-form-urlencoded") && !strings.Contains(contentType, "json") {
+		return selected, false, nil
+	}
+
+	body, err := io.ReadAll(io.LimitReader(r.Body, maxTransparentCredentialBodyBytes+1))
+	if err != nil {
+		return selected, false, fmt.Errorf("read Xtream request body: %w", err)
+	}
+	restoreRequestBody(r, body)
+	if len(body) > maxTransparentCredentialBodyBytes {
+		return selected, false, errors.New("Xtream credential body is too large")
+	}
+
+	selectUser := func(user provider.User) error {
+		if selected.Username != "" && !sameClientUser(selected, user) {
+			return errors.New("conflicting IPTV credentials in request")
+		}
+		selected = user
+		return nil
+	}
+
+	if strings.Contains(contentType, "application/x-www-form-urlencoded") {
+		values, parseErr := url.ParseQuery(string(body))
+		if parseErr != nil {
+			return selected, false, fmt.Errorf("parse Xtream form body: %w", parseErr)
+		}
+		changed := false
+		matched := false
+		for _, pair := range [][2]string{{"username", "password"}, {"user", "pass"}} {
+			username := values.Get(pair[0])
+			password := values.Get(pair[1])
+			if username == "" || password == "" {
+				continue
+			}
+			user, ok := authenticateXtreamClient(p, username, password)
+			if !ok {
+				continue
+			}
+			if err := selectUser(user); err != nil {
+				return selected, false, err
+			}
+			values.Set(pair[0], p.UpstreamUsername)
+			values.Set(pair[1], p.UpstreamPassword)
+			matched = true
+			changed = true
+		}
+		if changed {
+			restoreRequestBody(r, []byte(values.Encode()))
+		}
+		return selected, matched, nil
+	}
+
+	trimmed := bytes.TrimSpace(body)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("{}")) {
+		return selected, false, nil
+	}
+	decoder := json.NewDecoder(bytes.NewReader(trimmed))
+	decoder.UseNumber()
+	var payload map[string]any
+	if err := decoder.Decode(&payload); err != nil {
+		return selected, false, fmt.Errorf("parse Xtream JSON body: %w", err)
+	}
+	matched := false
+	changed := false
+	for _, pair := range [][2]string{{"username", "password"}, {"user", "pass"}} {
+		username, usernameOK := payload[pair[0]].(string)
+		password, passwordOK := payload[pair[1]].(string)
+		if !usernameOK || !passwordOK || username == "" || password == "" {
+			continue
+		}
+		user, ok := authenticateXtreamClient(p, username, password)
+		if !ok {
+			continue
+		}
+		if err := selectUser(user); err != nil {
+			return selected, false, err
+		}
+		payload[pair[0]] = p.UpstreamUsername
+		payload[pair[1]] = p.UpstreamPassword
+		matched = true
+		changed = true
+	}
+	if changed {
+		encoded, err := json.Marshal(payload)
+		if err != nil {
+			return selected, false, fmt.Errorf("encode Xtream JSON body: %w", err)
+		}
+		restoreRequestBody(r, encoded)
+	}
+	return selected, matched, nil
+}
+
 // buildTransparentUpstreamURL is the transparent Xtream request translator.
 // Instead of owning a fixed list of player endpoints, it discovers the
-// authenticated local credential pair in the query/path, replaces only that
-// pair with provider credentials, preserves the rest of the path/query, and
+// authenticated local credential pair in the query/path/body, replaces only
+// that pair with provider credentials, preserves the rest of the request, and
 // forwards future authenticated Xtream-compatible routes by default.
 func buildTransparentUpstreamURL(resolved routing.Resolved, r *http.Request) (*url.URL, string, provider.User, error) {
 	p := resolved.Provider
@@ -145,6 +263,16 @@ func buildTransparentUpstreamURL(resolved routing.Resolved, r *http.Request) (*u
 			firstPathCredential = index
 		}
 		index++
+	}
+
+	bodyUser, _, bodyErr := translateXtreamBodyCredentials(p, r, selectedUser)
+	if bodyErr != nil {
+		return nil, endpoint, provider.User{}, bodyErr
+	}
+	if bodyUser.Username != "" {
+		if err := selectUser(bodyUser); err != nil {
+			return nil, endpoint, provider.User{}, err
+		}
 	}
 
 	if selectedUser.Username == "" {
