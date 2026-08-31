@@ -130,6 +130,12 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.serveArtworkToken(recorder, r, resolved)
 		return
 	}
+	if strings.HasPrefix(resolved.RemainingPath, "/_media/") {
+		completionMeta["endpoint"] = "_media"
+		h.trace(ctx, "debug", "media.token", "Handling opaque signed/provider media request", providerMeta(resolved.Provider, "_media", nil))
+		h.serveMediaToken(recorder, r, resolved)
+		return
+	}
 
 	upstreamURL, endpoint, clientUser, err := buildTransparentUpstreamURL(resolved, r)
 	if err != nil {
