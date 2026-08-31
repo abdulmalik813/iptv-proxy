@@ -8,6 +8,7 @@ import (
 	"errors"
 	"html"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -131,7 +132,10 @@ func (h *Handler) artworkPublicURL(p provider.Provider, token string) string {
 }
 
 func artworkFailureKey(token string) string {
-	return "artwork:fail:" + token
+	// v2 intentionally ignores negative-cache entries created before raw-IP
+	// provider-origin fallback existed. Old keys expire naturally after five
+	// minutes and cannot suppress a newly recoverable image after deployment.
+	return "artwork:fail:v2:" + token
 }
 
 func (h *Handler) rememberArtworkFailure(ctx context.Context, token, reason string) {
@@ -146,6 +150,38 @@ func (h *Handler) clearArtworkFailure(ctx context.Context, token string) {
 		return
 	}
 	_ = h.redis.Del(ctx, artworkFailureKey(token)).Err()
+}
+
+func (h *Handler) rememberArtworkTarget(ctx context.Context, token string, p provider.Provider, target *url.URL) {
+	if h.redis == nil || token == "" || target == nil {
+		return
+	}
+	encoded, err := json.Marshal(artworkTarget{ProviderID: p.ID, URL: target.String()})
+	if err != nil {
+		return
+	}
+	_ = h.redis.Set(ctx, "artwork:"+token, encoded, artworkTokenTTL).Err()
+}
+
+func artworkProviderFallback(p provider.Provider, target *url.URL) (*url.URL, bool) {
+	if target == nil || net.ParseIP(target.Hostname()) == nil || len(target.Query()) != 0 {
+		return nil, false
+	}
+	providerBase, err := url.Parse(strings.TrimSuffix(p.Host, "/"))
+	if err != nil || providerBase.Scheme == "" || providerBase.Host == "" || strings.EqualFold(providerBase.Host, target.Host) {
+		return nil, false
+	}
+	fallback := *target
+	fallback.Scheme = providerBase.Scheme
+	fallback.Host = providerBase.Host
+	fallback.RawPath = ""
+	if basePath := strings.TrimSuffix(providerBase.Path, "/"); basePath != "" {
+		fallback.Path = basePath + "/" + strings.TrimPrefix(target.Path, "/")
+	}
+	if !safeArtworkURL(&fallback) {
+		return nil, false
+	}
+	return &fallback, true
 }
 
 func (h *Handler) serveArtworkToken(w http.ResponseWriter, r *http.Request, resolved routing.Resolved) {
@@ -213,123 +249,180 @@ func (h *Handler) serveArtworkToken(w http.ResponseWriter, r *http.Request, reso
 
 func (h *Handler) serveArtwork(w http.ResponseWriter, r *http.Request, p provider.Provider, target *url.URL, token string) {
 	started := time.Now()
-	outgoingURL := safeURLString(target.String())
+	candidates := []*url.URL{target}
+	if fallback, ok := artworkProviderFallback(p, target); ok {
+		candidates = append(candidates, fallback)
+	}
 
-	// Always validate artwork with an upstream GET. Some provider/CDN image
-	// servers reject HEAD even when GET succeeds; letting that HEAD failure enter
-	// the negative cache would make a later legitimate GET fail for five minutes.
-	upstreamMethod := http.MethodGet
-	req, err := http.NewRequestWithContext(r.Context(), upstreamMethod, target.String(), nil)
-	if err != nil {
-		h.rememberArtworkFailure(r.Context(), token, "invalid request")
-		http.Error(w, "artwork unavailable", http.StatusBadGateway)
-		return
-	}
-	copySafeRequestHeaders(req.Header, r.Header)
-	// Image fetching is intentionally not Range/conditional driven. Fetch one
-	// bounded complete asset so its bytes can be validated and a client probe
-	// cannot poison the shared token with a 304/403/405 response.
-	for _, key := range []string{"Range", "If-Range", "If-Match", "If-None-Match", "If-Modified-Since", "If-Unmodified-Since", "Accept-Encoding", "Content-Length"} {
-		req.Header.Del(key)
-	}
-	h.trace(r.Context(), "info", "upstream.request", "Outgoing artwork request to provider/CDN", map[string]any{
-		"direction":    "outgoing",
-		"method":       upstreamMethod,
-		"clientMethod": r.Method,
-		"url":          outgoingURL,
-		"outgoingUrl":  outgoingURL,
-		"providerId":   p.ID,
-		"providerName": p.Name,
-		"assetType":    "artwork",
-	})
-	resp, err := artworkHTTPClient.Do(req)
-	if err != nil {
-		h.rememberArtworkFailure(r.Context(), token, err.Error())
-		h.trace(r.Context(), "error", "upstream.error", "Outgoing artwork request failed", map[string]any{
+	var lastReason string
+	lastStatus := http.StatusBadGateway
+	for attempt, candidate := range candidates {
+		attemptStarted := time.Now()
+		outgoingURL := safeURLString(candidate.String())
+		req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, candidate.String(), nil)
+		if err != nil {
+			lastReason = "invalid request"
+			continue
+		}
+		copySafeRequestHeaders(req.Header, r.Header)
+		// Image fetching is intentionally not Range/conditional driven. Fetch one
+		// bounded complete asset so its bytes can be validated and a client probe
+		// cannot poison the shared token with a 304/403/405 response.
+		for _, key := range []string{"Range", "If-Range", "If-Match", "If-None-Match", "If-Modified-Since", "If-Unmodified-Since", "Accept-Encoding", "Content-Length"} {
+			req.Header.Del(key)
+		}
+		h.trace(r.Context(), "info", "upstream.request", "Outgoing artwork request to provider/CDN", map[string]any{
 			"direction":    "outgoing",
-			"method":       upstreamMethod,
+			"method":       http.MethodGet,
 			"clientMethod": r.Method,
 			"url":          outgoingURL,
 			"outgoingUrl":  outgoingURL,
 			"providerId":   p.ID,
 			"providerName": p.Name,
 			"assetType":    "artwork",
-			"elapsedMs":    time.Since(started).Milliseconds(),
-			"error":        err.Error(),
+			"fallback":     attempt > 0,
 		})
-		http.Error(w, "artwork unavailable", http.StatusBadGateway)
-		return
-	}
-	defer resp.Body.Close()
-	h.trace(r.Context(), "info", "upstream.response", "Incoming artwork response from provider/CDN", map[string]any{
-		"direction":     "incoming",
-		"method":        upstreamMethod,
-		"clientMethod":  r.Method,
-		"url":           outgoingURL,
-		"outgoingUrl":   outgoingURL,
-		"providerId":    p.ID,
-		"providerName":  p.Name,
-		"assetType":     "artwork",
-		"status":        resp.StatusCode,
-		"contentType":   resp.Header.Get("Content-Type"),
-		"contentLength": resp.ContentLength,
-		"elapsedMs":     time.Since(started).Milliseconds(),
-	})
 
-	if resp.StatusCode != http.StatusOK {
-		h.rememberArtworkFailure(r.Context(), token, "HTTP "+strconv.Itoa(resp.StatusCode))
-		status := resp.StatusCode
-		if status < 400 || status >= 500 {
-			status = http.StatusBadGateway
+		resp, err := artworkHTTPClient.Do(req)
+		if err != nil {
+			lastReason = err.Error()
+			if attempt+1 < len(candidates) {
+				h.trace(r.Context(), "warning", "artwork.retry", "Artwork target failed; retrying through provider origin", map[string]any{
+					"providerId":   p.ID,
+					"providerName": p.Name,
+					"outgoingUrl":  outgoingURL,
+					"nextUrl":      safeURLString(candidates[attempt+1].String()),
+					"elapsedMs":    time.Since(attemptStarted).Milliseconds(),
+					"error":        err.Error(),
+				})
+				continue
+			}
+			break
 		}
-		http.Error(w, "artwork unavailable", status)
-		return
-	}
-	if resp.ContentLength > artworkMaxBytes {
-		h.rememberArtworkFailure(r.Context(), token, "image too large")
-		http.Error(w, "artwork unavailable", http.StatusBadGateway)
-		return
-	}
 
-	body, err := io.ReadAll(io.LimitReader(resp.Body, artworkMaxBytes+1))
-	if err != nil {
-		h.rememberArtworkFailure(r.Context(), token, err.Error())
-		http.Error(w, "artwork unavailable", http.StatusBadGateway)
-		return
-	}
-	if len(body) > artworkMaxBytes {
-		h.rememberArtworkFailure(r.Context(), token, "image too large")
-		http.Error(w, "artwork unavailable", http.StatusBadGateway)
-		return
-	}
-	contentType := sniffArtworkContentType(body)
-	if contentType == "" {
-		h.rememberArtworkFailure(r.Context(), token, "invalid image payload")
-		h.trace(r.Context(), "warning", "artwork.invalid", "Artwork upstream returned a non-image payload", map[string]any{
-			"providerId":   p.ID,
-			"providerName": p.Name,
-			"outgoingUrl":  outgoingURL,
-			"bytes":        len(body),
-			"contentType":  resp.Header.Get("Content-Type"),
+		h.trace(r.Context(), "info", "upstream.response", "Incoming artwork response from provider/CDN", map[string]any{
+			"direction":     "incoming",
+			"method":        http.MethodGet,
+			"clientMethod":  r.Method,
+			"url":           outgoingURL,
+			"outgoingUrl":   outgoingURL,
+			"providerId":    p.ID,
+			"providerName":  p.Name,
+			"assetType":     "artwork",
+			"fallback":      attempt > 0,
+			"status":        resp.StatusCode,
+			"contentType":   resp.Header.Get("Content-Type"),
+			"contentLength": resp.ContentLength,
+			"elapsedMs":     time.Since(attemptStarted).Milliseconds(),
 		})
-		http.Error(w, "artwork unavailable", http.StatusBadGateway)
+
+		lastStatus = resp.StatusCode
+		if resp.StatusCode != http.StatusOK {
+			lastReason = "HTTP " + strconv.Itoa(resp.StatusCode)
+			_ = resp.Body.Close()
+			if attempt+1 < len(candidates) {
+				h.trace(r.Context(), "warning", "artwork.retry", "Artwork target returned an unusable status; retrying through provider origin", map[string]any{
+					"providerId":   p.ID,
+					"providerName": p.Name,
+					"outgoingUrl":  outgoingURL,
+					"nextUrl":      safeURLString(candidates[attempt+1].String()),
+					"status":       resp.StatusCode,
+				})
+				continue
+			}
+			break
+		}
+		if resp.ContentLength > artworkMaxBytes {
+			lastReason = "image too large"
+			_ = resp.Body.Close()
+			if attempt+1 < len(candidates) {
+				continue
+			}
+			break
+		}
+
+		body, readErr := io.ReadAll(io.LimitReader(resp.Body, artworkMaxBytes+1))
+		headers := resp.Header.Clone()
+		_ = resp.Body.Close()
+		if readErr != nil {
+			lastReason = readErr.Error()
+			if attempt+1 < len(candidates) {
+				continue
+			}
+			break
+		}
+		if len(body) > artworkMaxBytes {
+			lastReason = "image too large"
+			if attempt+1 < len(candidates) {
+				continue
+			}
+			break
+		}
+		contentType := sniffArtworkContentType(body)
+		if contentType == "" {
+			lastReason = "invalid image payload"
+			h.trace(r.Context(), "warning", "artwork.invalid", "Artwork upstream returned a non-image payload", map[string]any{
+				"providerId":   p.ID,
+				"providerName": p.Name,
+				"outgoingUrl":  outgoingURL,
+				"bytes":        len(body),
+				"contentType":  headers.Get("Content-Type"),
+			})
+			if attempt+1 < len(candidates) {
+				continue
+			}
+			break
+		}
+
+		// If the raw provider IP failed but the configured provider origin served
+		// the same picon path successfully, teach this deterministic token the
+		// working target. Future requests skip the dead-IP timeout entirely.
+		if attempt > 0 {
+			h.rememberArtworkTarget(r.Context(), token, p, candidate)
+			h.trace(r.Context(), "info", "artwork.fallback_learned", "Artwork token learned a working provider-origin target", map[string]any{
+				"providerId":   p.ID,
+				"providerName": p.Name,
+				"outgoingUrl":  outgoingURL,
+				"token":        token,
+			})
+		}
+		h.clearArtworkFailure(r.Context(), token)
+		copyResponseHeaders(w.Header(), headers)
+		w.Header().Set("Content-Type", contentType)
+		w.Header().Set("Content-Length", strconv.Itoa(len(body)))
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		if w.Header().Get("Cache-Control") == "" {
+			w.Header().Set("Cache-Control", "public, max-age=14400")
+		}
+		if strings.HasPrefix(contentType, "image/svg") {
+			w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; sandbox")
+		}
+		w.WriteHeader(http.StatusOK)
+		if r.Method != http.MethodHead {
+			_, _ = w.Write(body)
+		}
 		return
 	}
 
-	h.clearArtworkFailure(r.Context(), token)
-	copyResponseHeaders(w.Header(), resp.Header)
-	w.Header().Set("Content-Type", contentType)
-	w.Header().Set("Content-Length", strconv.Itoa(len(body)))
-	w.Header().Set("X-Content-Type-Options", "nosniff")
-	if w.Header().Get("Cache-Control") == "" {
-		w.Header().Set("Cache-Control", "public, max-age=14400")
+	if lastReason == "" {
+		lastReason = "artwork unavailable"
 	}
-	if strings.HasPrefix(contentType, "image/svg") {
-		w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; sandbox")
+	h.rememberArtworkFailure(r.Context(), token, lastReason)
+	h.trace(r.Context(), "error", "upstream.error", "Outgoing artwork request failed", map[string]any{
+		"direction":    "outgoing",
+		"method":       http.MethodGet,
+		"clientMethod": r.Method,
+		"url":          safeURLString(target.String()),
+		"outgoingUrl":  safeURLString(target.String()),
+		"providerId":   p.ID,
+		"providerName": p.Name,
+		"assetType":    "artwork",
+		"elapsedMs":    time.Since(started).Milliseconds(),
+		"error":        lastReason,
+	})
+	status := lastStatus
+	if status < 400 || status >= 500 {
+		status = http.StatusBadGateway
 	}
-	w.WriteHeader(http.StatusOK)
-	if r.Method == http.MethodHead {
-		return
-	}
-	_, _ = w.Write(body)
+	http.Error(w, "artwork unavailable", status)
 }
