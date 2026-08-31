@@ -34,13 +34,20 @@ test('Go route resolver supports explicit provider routes before default provide
   assert.match(resolver, /MatchedBy: MatchDefault/);
 });
 
-test('Go routing only forwards recognized authenticated IPTV endpoint families', async () => {
+test('Go routing transparently forwards authenticated player requests while denying provider management surfaces', async () => {
   const handler = await source('internal/proxy/handler.go');
-  for (const endpoint of ['player_api.php', 'get.php', 'xmltv.php', 'live', 'movie', 'series', 'timeshift', 'streaming']) {
-    assert.match(handler, new RegExp(`"${endpoint.replace('.', '\\.') }"`));
-  }
-  assert.match(handler, /unsupported IPTV endpoint/);
-  assert.match(handler, /invalid IPTV credentials/);
+  const translator = await source('internal/proxy/xtream_request.go');
+  const routePolicy = await source('internal/proxy/route_policy.go');
+  assert.match(handler, /buildTransparentUpstreamURL/);
+  assert.match(handler, /serveTransparent/);
+  assert.match(handler, /serveCached/);
+  assert.match(handler, /serveLiveMultiplexed/);
+  assert.match(handler, /serveDirect/);
+  assert.match(translator, /blockedXtreamRoutes/);
+  assert.match(translator, /provider management endpoint is not available through IPTV proxy/);
+  assert.match(translator, /invalid IPTV credentials/);
+  assert.match(translator, /future Xtream route shapes/);
+  assert.match(routePolicy, /case "live", "movie", "series", "timeshift", "streaming", "hls"/);
 });
 
 test('cache design contract documents the production invariants and scenario target', async () => {
@@ -257,11 +264,18 @@ test('HLS playlists proxy nested playlists segments keys maps audio and subtitle
   assert.doesNotMatch(hls, /return match/);
 });
 
-test('provider catch-up supports path and streaming timeshift forms', async () => {
-  const handler = compact(await source('internal/proxy/handler.go'));
+test('provider catch-up remains a dedicated media interceptor for path and PHP timeshift forms', async () => {
+  const handler = await source('internal/proxy/handler.go');
+  const direct = await source('internal/proxy/direct_proxy.go');
+  const catchup = await source('internal/proxy/catchup.go');
+  const routePolicy = await source('internal/proxy/route_policy.go');
   const tests = await source('internal/proxy/direct_test.go');
-  assert.match(handler, /case "timeshift"/);
-  assert.match(handler, /timeshift\.php/);
+  assert.match(handler, /isXtreamCatchupTarget/);
+  assert.match(handler, /serveDirect/);
+  assert.match(routePolicy, /"timeshift"/);
+  assert.match(routePolicy, /"streaming"/);
+  assert.match(direct, /serveCatchupDirect/);
+  assert.match(catchup, /timeshift\.php/);
   assert.match(tests, /TestBuildUpstreamURLTimeshiftPath/);
   assert.match(tests, /TestBuildUpstreamURLStreamingTimeshiftQuery/);
 });

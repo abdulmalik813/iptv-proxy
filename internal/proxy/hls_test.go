@@ -78,7 +78,7 @@ func TestRewritePlaylistAcceptsBOMIndentedTagsAndInlineDataURI(t *testing.T) {
 	}
 }
 
-func TestServeDirectDoesNotSniffCatchupTSBodyAsHLS(t *testing.T) {
+func TestServeDirectRejectsMislabeledPlaylistAsCatchupTS(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "video/mp2t")
 		_, _ = io.WriteString(w, "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-ENDLIST\n")
@@ -94,15 +94,15 @@ func TestServeDirectDoesNotSniffCatchupTSBodyAsHLS(t *testing.T) {
 
 	resp := w.Result()
 	defer resp.Body.Close()
-	if got := resp.Header.Get("Content-Type"); got != "video/mp2t" {
-		t.Fatalf("Content-Type=%q", got)
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Fatalf("status=%d", resp.StatusCode)
 	}
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(string(body), "#EXTM3U\n") {
-		t.Fatalf("body=%q", body)
+	if strings.HasPrefix(string(body), "#EXTM3U\n") {
+		t.Fatalf("fake catch-up playlist was passed to the TS player: %q", body)
 	}
 }
 
